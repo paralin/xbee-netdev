@@ -5,6 +5,14 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("paralin");
 MODULE_DESCRIPTION("IP over Xbee.");
 
+#define ENSURE_MODULE \
+  if (!try_module_get(THIS_MODULE)) \
+    return -ENODEV;
+
+#define ENSURE_MODULE_NORET \
+  if (!try_module_get(THIS_MODULE)) \
+    return;
+
 /* = Serial Bridge Stuff = */
 void n_xbee_init_bridge_ll(void) {
   n_xbee_serial_bridges = NULL;
@@ -75,6 +83,16 @@ xbee_serial_bridge* n_xbee_find_bridge(const char* name) {
   return NULL;
 }
 
+/* = XBEE Controls */
+
+// Checks the tty to see if there is really an xbee
+// on the other end, and if so, it's communicating right.
+int n_xbee_check_tty(struct tty_struct* tty) {
+  // TODO: implement this
+
+  return 0;
+}
+
 /* = XBEE NetDev = */
 static int n_xbee_netdev_open(struct net_device* dev) {
   printk(KERN_INFO "Kernel is opening %s...\n", dev->name);
@@ -104,6 +122,7 @@ static void n_xbee_netdev_init_early(struct net_device* dev) {
 
   dev->netdev_ops = &n_xbee_netdev_ops;
   dev->flags |= IFF_NOARP;
+  dev->mtu    = N_XBEE_DATA_MTU;
   // dev->features |= NETIF_F_NO_CSUM;
   // set priv flags and features and mtu
 }
@@ -168,6 +187,9 @@ void n_xbee_free_netdev(xbee_serial_bridge* n) {
 
 // Called when the userspace closes the tty.
 static void n_xbee_serial_close(struct tty_struct* tty) {
+  // Make sure our module is still loaded
+  ENSURE_MODULE_NORET;
+
   xbee_serial_bridge* bridge;
   printk(KERN_INFO "TTY %s detached.\n", tty->name);
   bridge = n_xbee_find_bridge((const char*) tty->name);
@@ -188,6 +210,9 @@ static void n_xbee_serial_close(struct tty_struct* tty) {
  * other end, and if not, bail out with an error.
  */
 static int n_xbee_serial_open(struct tty_struct* tty) {
+  // Make sure our module is still loaded
+  ENSURE_MODULE;
+
   xbee_serial_bridge* bridge;
   int i;
   int nlen;
@@ -195,8 +220,7 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   char* rttyname;
 
   // Make sure our module is still loaded
-  if (!try_module_get(THIS_MODULE))
-    return -ENODEV;
+  ENSURE_MODULE;
 
   // Find the existing allocated netdev for this (shouldn't happen)
   // .. or make a new one.
@@ -211,13 +235,22 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   // remove the tty
   rttyname = strncmp("tty", tty->name, 3) == 0 ? (tty->name + 3) : tty->name;
   nlen = strlen(rttyname);
+
+  // verify the tty
+  if (n_xbee_check_tty(tty) != 0) {
+    printk(KERN_ALERT "Couldn't contact xbee on %s, make sure it's a valid xbee and the baud is correct.\n", tty->name);
+    return -ENODEV;
+  }
+
   bridge = (xbee_serial_bridge*)kmalloc(sizeof(xbee_serial_bridge), GFP_KERNEL);
+  bridge->tty = tty;
   bridge->name = (char*)kmalloc(sizeof(char) * (strlen(tty->name) + 1), GFP_KERNEL);
   bridge->name[strlen(tty->name)] = '\0';
   for (i = 0; i < strlen(tty->name); i++)
     bridge->name[i] = tty->name[i];
   bridge->next = 0;
   bridge->netdevInitialized = 0;
+  bridge->netdev = 0;
 
   ndevnlen = strlen(XBEE_NETDEV_PREFIX) + nlen;
   bridge->netdevName = (char*)kmalloc(sizeof(char) * (ndevnlen + 1), GFP_KERNEL);
@@ -238,6 +271,10 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
 
 // Line discipline, allows us to assign ownership
 // of a serial device to this driver.
+// NOTE: make sure to call ENSURE_MODULE FIRST!!
+// this ldisc remains after the module is unloaded.
+// this means if the userspace tries to use the ldisc it will segfault
+// assuimng the module had been removed.
 struct tty_ldisc_ops n_xbee_ldisc = {
   .owner = THIS_MODULE,
   .magic = TTY_LDISC_MAGIC,

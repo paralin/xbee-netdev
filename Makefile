@@ -13,3 +13,7 @@ clean:
 driver:
 	@echo "Building driver"
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
+
+daemon:
+	@echo "Building ldisc setter"
+	$(CC) -o ldisc_daemon ldisc_daemon.c
