@@ -187,10 +187,10 @@ void n_xbee_free_netdev(xbee_serial_bridge* n) {
 
 // Called when the userspace closes the tty.
 static void n_xbee_serial_close(struct tty_struct* tty) {
+  xbee_serial_bridge* bridge;
   // Make sure our module is still loaded
   ENSURE_MODULE_NORET;
 
-  xbee_serial_bridge* bridge;
   printk(KERN_INFO "TTY %s detached.\n", tty->name);
   bridge = n_xbee_find_bridge((const char*) tty->name);
   if (!bridge) {
@@ -210,9 +210,6 @@ static void n_xbee_serial_close(struct tty_struct* tty) {
  * other end, and if not, bail out with an error.
  */
 static int n_xbee_serial_open(struct tty_struct* tty) {
-  // Make sure our module is still loaded
-  ENSURE_MODULE;
-
   xbee_serial_bridge* bridge;
   int i;
   int nlen;
@@ -299,6 +296,7 @@ static int __init n_xbee_init(void) {
 static void __exit n_xbee_cleanup(void) {
   printk(KERN_INFO "xbee-net shutting down...\n");
   n_xbee_free_all_bridges();
+  tty_unregister_ldisc(N_XBEE_LISC);
 }
 
 module_init(n_xbee_init);
