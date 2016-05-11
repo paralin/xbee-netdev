@@ -120,22 +120,37 @@ static int n_xbee_netdev_init_late(struct net_device* dev) {
 }
 
 static int n_xbee_netdev_change_mtu(struct net_device* dev, int new_mtu) {
+  struct xbee_netdev_priv* priv;
   if (new_mtu < N_XBEE_DATA_MTU)
     return -EINVAL;
   if (new_mtu == dev->mtu)
     return 0;
+  priv = netdev_priv(dev);
 
   printk(KERN_INFO "Changing MTU of %s to %u...\n", dev->name, new_mtu);
 
   // Stop the net queue
+  netif_stop_queue(dev);
+
   // Get the spinlock
+  spin_lock(&priv->bridge->write_lock);
+
   // Stop the net queue (again) just to be sure
+  netif_stop_queue(dev);
+
   // Reset the fragmentation system
+  // TODO
+
   // Set the MTU on the net device
+  dev->mtu = new_mtu;
+
   // Initialize the fragmentation system
+  // TODO
+
   // Start the net queue
-  // return 0;
-  return -ENOSYS;
+  spin_unlock(&priv->bridge->write_lock);
+  netif_wake_queue(dev);
+  return 0;
 }
 
 static const struct net_device_ops n_xbee_netdev_ops = {
