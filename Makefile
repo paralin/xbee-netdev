@@ -1,14 +1,16 @@
-obj-m := n_xbee.o
+_XBEE_NET_FILES := ./src/n_xbee.o
+
+obj-m := $(_XBEE_NET_FILES)
 
 KERNELDIR := /usr/src/linux
 
 PWD := $(shell pwd)
-CC := gcc
+CC := gcc -Wall -Werror
 
-default: driver
+default: driver daemon
 
 clean:
-	rm -f *.ko *.o *.mod.c Module.symvers modules.order
+	cd src && rm -f *.ko *.o *.mod.c Module.symvers modules.order
 
 driver:
 	@echo "Building driver"
@@ -16,4 +18,4 @@ driver:
 
 daemon:
 	@echo "Building ldisc setter"
-	$(CC) -o ldisc_daemon ldisc_daemon.c
+	$(CC) -o ldisc_daemon ./src/ldisc_daemon.c

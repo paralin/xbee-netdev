@@ -13,6 +13,8 @@
 #include <linux/tty.h>
 
 #define N_XBEE_LISC 17
+
+// Actual MTU post-fragmentation
 #define N_XBEE_DATA_MTU 72
 #define N_XBEE_MAXFRAME (N_XBEE_DATA_MTU*2 + 16)
 
@@ -81,6 +83,7 @@ typedef struct xbee_serial_bridge {
   struct xbee_serial_bridge* next;
   struct xbee_frame_state frame_state;
   struct tty_struct* tty;
+  spinlock_t write_lock;
 } xbee_serial_bridge;
 struct xbee_serial_bridge* n_xbee_serial_bridges;
 

@@ -107,23 +107,43 @@ static int n_xbee_netdev_release(struct net_device* dev) {
 }
 
 static int n_xbee_netdev_init_late(struct net_device* dev) {
-  // todo set up fragmentation, etc.
+  // Initialize the fragmentation system
   return 0;
+}
+
+static int n_xbee_netdev_change_mtu(struct net_device* dev, int new_mtu) {
+  if (new_mtu < N_XBEE_DATA_MTU)
+    return -EINVAL;
+  if (new_mtu == dev->mtu)
+    return 0;
+
+  printk(KERN_INFO "Changing MTU of %s to %u...\n", dev->name, new_mtu);
+
+  // Stop the net queue
+  // Get the spinlock
+  // Stop the net queue (again) just to be sure
+  // Reset the fragmentation system
+  // Set the MTU on the net device
+  // Initialize the fragmentation system
+  // Start the net queue
+  // return 0;
+  return -ENOSYS;
 }
 
 static const struct net_device_ops n_xbee_netdev_ops = {
   .ndo_init = n_xbee_netdev_init_late,
   .ndo_open = n_xbee_netdev_open,
   .ndo_stop = n_xbee_netdev_release,
+  .ndo_change_mtu = n_xbee_netdev_change_mtu,
 };
 
 static void n_xbee_netdev_init_early(struct net_device* dev) {
   // struct xbee_netdev_priv* priv = netdev_priv(dev);
 
+  ether_setup(dev);
   dev->netdev_ops = &n_xbee_netdev_ops;
-  dev->flags |= IFF_NOARP;
+  // dev->flags |= IFF_NOARP;
   dev->mtu    = N_XBEE_DATA_MTU;
-  // dev->features |= NETIF_F_NO_CSUM;
   // set priv flags and features and mtu
 }
 
@@ -148,6 +168,7 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
   priv = netdev_priv(ndev);
   memset(priv, 0, sizeof(*priv));
   priv->bridge = bridge;
+  spin_lock_init(&priv->bridge->write_lock);
 
   if ((err = register_netdev(ndev)) != 0) {
     printk(KERN_ALERT "Failed to register netdev %s with error %i...", bridge->netdevName, err);

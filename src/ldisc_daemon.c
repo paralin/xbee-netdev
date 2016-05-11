@@ -36,13 +36,13 @@ int main(int argc, char **argv) {
     }
 
     sprintf(baud_command, "stty -F %s %li", port, baudrate);
-    if(err = system(baud_command)) {
+    if((err = system(baud_command))) {
         perror("Failed setting baud rate");
         return err;
     }
 
     // Set the line discipline
-    if(err = ioctl(fd, TIOCSETD, &ldisc)) {
+    if((err = ioctl(fd, TIOCSETD, &ldisc))) {
         perror("Setting line discipline failed");
         close(fd);
         return -err;
