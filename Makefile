@@ -2,7 +2,6 @@ _XBEE_NET_FILES := ./src/n_xbee.o
 
 obj-m := $(_XBEE_NET_FILES)
 
-PWD := $(shell pwd)
 KERNELDIR := /usr/src/linux
 EXTRA_CFLAGS += -I$(PWD)/thirdparty/xbee_ansic_library/include
 

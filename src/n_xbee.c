@@ -1,4 +1,6 @@
 #include "n_xbee.h"
+#include <xbee/device.h>
+#include <xbee/atcmd.h>
 
 // Module init stuff
 MODULE_LICENSE("GPL");
@@ -84,6 +86,12 @@ xbee_serial_bridge* n_xbee_find_bridge(const char* name) {
 }
 
 /* = XBEE Controls */
+
+// Prepare to transmit by waking up the device, etc
+void n_xbee_prepare_xmit(struct tty_struct* tty) {
+  tty->flags |= (1 << TTY_DO_WRITE_WAKEUP);
+  // to write, use tty->driver->ops->write(tty, frame, len)
+}
 
 // Checks the tty to see if there is really an xbee
 // on the other end, and if so, it's communicating right.
