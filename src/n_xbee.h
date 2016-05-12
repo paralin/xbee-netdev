@@ -1,6 +1,7 @@
 #pragma once
 #ifndef _N_XBEE_H
 #define _N_XBEE_H
+#define XBEE_DEVICE_ENABLE_ATMODE
 
 #include <linux/module.h>    // included for all kernel modules
 #include <linux/kernel.h>    // included for KERN_INFO
