@@ -187,14 +187,14 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge) {
   // we have to wait around 2 seconds here for the xbee driver to exit AT mode
   while (1) {
     if (iterations > 410) {
-      printk(KERN_ALERT "Timeout waiting for AT mode exit, assuming invalid.\n");
+      printk(KERN_ALERT "%s: Timeout waiting for AT mode exit, assuming invalid.\n", __FUNCTION__);
       return -ETIMEDOUT;
     }
 
     mode = xbee_atmode_tick(xbee);
 
     if (mode == XBEE_MODE_IDLE) {
-      printk(KERN_INFO "Successfully exited AT mode.\n");
+      printk(KERN_INFO "%s: Successfully exited AT mode.\n", __FUNCTION__);
       break;
     }
 
@@ -207,13 +207,13 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge) {
 
 /* = XBEE NetDev = */
 static int n_xbee_netdev_open(struct net_device* dev) {
-  printk(KERN_INFO "Kernel is opening %s...\n", dev->name);
+  printk(KERN_INFO "%s: Kernel is opening %s...\n", __FUNCTION__, dev->name);
   netif_start_queue(dev);
   return 0;
 }
 
 static int n_xbee_netdev_release(struct net_device* dev) {
-  printk(KERN_INFO "Kernel is closing %s...\n", dev->name);
+  printk(KERN_INFO "%s: Kernel is closing %s...\n", __FUNCTION__, dev->name);
   netif_stop_queue(dev);
   return 0;
 }
@@ -231,7 +231,7 @@ static int n_xbee_netdev_change_mtu(struct net_device* dev, int new_mtu) {
     return 0;
   priv = netdev_priv(dev);
 
-  printk(KERN_INFO "Changing MTU of %s to %u...\n", dev->name, new_mtu);
+  printk(KERN_INFO "%s: Changing MTU of %s to %u...\n", __FUNCTION__, dev->name, new_mtu);
 
   // Stop the net queue
   netif_stop_queue(dev);
@@ -286,14 +286,14 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
   int err;
   if (!bridge || !bridge->name) return -1;
   if (bridge->netdevInitialized) {
-    printk(KERN_ALERT "Net bridge %s already inited!\n", bridge->netdevName);
+    printk(KERN_ALERT "%s: Net bridge %s already inited!\n", __FUNCTION__, bridge->netdevName);
     return -1;
   }
 
-  printk(KERN_INFO "Initializing net bridge %s as %s...\n", bridge->name, bridge->netdevName);
+  printk(KERN_INFO "%s: Initializing net bridge %s as %s...\n", __FUNCTION__, bridge->name, bridge->netdevName);
   ndev = bridge->netdev = alloc_netdev(sizeof(xbee_netdev_priv), bridge->netdevName, NET_NAME_UNKNOWN, n_xbee_netdev_init_early);
   if (!ndev) {
-    printk(KERN_ALERT "Failed to init netdev %s...\n", bridge->netdevName);
+    printk(KERN_ALERT "%s: Failed to init netdev %s...\n", __FUNCTION__, bridge->netdevName);
     return -1;
   }
 
@@ -303,7 +303,7 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
   priv->bridge = bridge;
 
   if ((err = register_netdev(ndev)) != 0) {
-    printk(KERN_ALERT "Failed to register netdev %s with error %i...", bridge->netdevName, err);
+    printk(KERN_ALERT "%s: Failed to register netdev %s with error %i...", __FUNCTION__, bridge->netdevName, err);
     bridge->netdevInitialized = 0;
     free_netdev(ndev);
     bridge->netdev = NULL;
@@ -320,7 +320,7 @@ void n_xbee_free_netdev(xbee_serial_bridge* n) {
     unregister_netdev(n->netdev);
   n->netdevInitialized = 0;
   if (!n->netdev) return;
-  printk(KERN_INFO "Shutting down net bridge %s...\n", n->netdevName);
+  printk(KERN_INFO "%s: Shutting down net bridge %s...\n", __FUNCTION__, n->netdevName);
   priv = netdev_priv(n->netdev);
   priv->bridge = NULL;
   free_netdev(n->netdev);
@@ -343,10 +343,10 @@ static void n_xbee_serial_close(struct tty_struct* tty) {
   // Make sure our module is still loaded
   ENSURE_MODULE_NORET;
 
-  printk(KERN_INFO "TTY %s detached.\n", tty->name);
+  printk(KERN_INFO "%s: TTY %s detached.\n", __FUNCTION__, tty->name);
   bridge = n_xbee_find_bridge_byname((const char*) tty->name);
   if (!bridge) {
-    printk(KERN_ALERT "TTY %s not found/previously initialized...\n", tty->name);
+    printk(KERN_ALERT "%s: TTY %s not found/previously initialized...\n", __FUNCTION__, tty->name);
     return;
   }
   n_xbee_remove_bridge(bridge);
@@ -362,7 +362,7 @@ int n_xbee_resolve_pending_dev(xbee_pending_dev* dev) {
     return -1;
 
   if (n_xbee_check_tty(dev->bridge) != 0) {
-    printk(KERN_ALERT "Couldn't contact xbee on %s, make sure it's a valid xbee and the baud is correct.\n", dev->bridge->tty->name);
+    printk(KERN_ALERT "%s: Couldn't contact xbee on %s, make sure it's a valid xbee and the baud is correct.\n", __FUNCTION__, dev->bridge->tty->name);
     return -ENODEV;
   }
 
@@ -370,7 +370,7 @@ int n_xbee_resolve_pending_dev(xbee_pending_dev* dev) {
     return -1;
 
   if (n_xbee_init_netdev(dev->bridge) != 0) {
-    printk(KERN_ALERT "%s n_xbee_init_netdev indicated failure, aborting.\n", dev->bridge->tty->name);
+    printk(KERN_ALERT "%s: %s n_xbee_init_netdev indicated failure, aborting.\n", __FUNCTION__, dev->bridge->tty->name);
     return -ENODEV;
   }
   dev->bridge->pend_dev = NULL;
@@ -410,10 +410,10 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
 
   // Find the existing allocated netdev for this (shouldn't happen)
   // .. or make a new one.
-  printk(KERN_INFO "TTY %s attached.\n", tty->name);
+  printk(KERN_INFO "%s: TTY %s attached.\n", __FUNCTION__, tty->name);
   bridge = n_xbee_find_bridge_byname((const char*) tty->name);
   if (bridge) {
-    printk(KERN_ALERT "TTY %s was previously attached, shutting it down first...\n", tty->name);
+    printk(KERN_ALERT "%s: TTY %s was previously attached, shutting it down first...\n", __FUNCTION__, tty->name);
     n_xbee_remove_bridge(bridge);
     n_xbee_free_bridge(bridge);
   }
@@ -488,7 +488,7 @@ static void n_xbee_flush_buffer(struct tty_struct* tty) {
     return;
   // Acquire read lock
   spin_lock(&bridge->read_lock);
-  printk(KERN_INFO "%s flushing buffer by kernel request.\n", tty->name);
+  printk(KERN_INFO "%s: %s flushing buffer by kernel request.\n", __FUNCTION__, tty->name);
   bridge->recvbuf->pos = 0;
   spin_unlock(&bridge->read_lock);
 }
@@ -526,7 +526,7 @@ static ssize_t n_xbee_read(struct tty_struct* tty, struct file* file, unsigned c
     memcpy(buf, bridge->recvbuf->buffer, ntread);
   else
     if ((cpres = copy_to_user(buf, bridge->recvbuf->buffer, ntread)) != 0)
-      printk(KERN_ALERT "in %s, copy_to_user returned %d.\n", __FUNCTION__, cpres);
+      printk(KERN_ALERT "%s: copy_to_user returned %d.\n", __FUNCTION__, cpres);
 
   // nleft = amount of bytes left in the buffer
   nleft = bridge->recvbuf->pos - ntread;
@@ -547,11 +547,8 @@ static ssize_t n_xbee_write(struct tty_struct* tty, struct file* file, const uns
   struct xbee_serial_bridge* bridge;
   int result;
 
-#ifdef N_XBEE_VERBOSE
-#ifdef XBEE_SERIAL_VERBOSE
+#if defined(N_XBEE_VERBOSE) && defined(XBEE_SERIAL_VERBOSE)
   int anyNonAscii, i;
-#endif
-  printk(KERN_INFO "%s: to %s, size %d\n", __FUNCTION__, tty->name, (int)nr);
 #endif
 
   ENSURE_MODULE;
@@ -565,7 +562,7 @@ static ssize_t n_xbee_write(struct tty_struct* tty, struct file* file, const uns
   result = tty->driver->ops->write(tty, buf, nr);
   spin_unlock(&bridge->write_lock);
 #ifdef N_XBEE_VERBOSE
-  printk(KERN_INFO "%s: to %s, writing result %d\n", __FUNCTION__, tty->name, result);
+  printk(KERN_INFO "%s: to %s, size %d, written %d\n", __FUNCTION__, tty->name, (int)nr, result);
 #if defined(XBEE_SERIAL_VERBOSE)
   {
     anyNonAscii = 0;
@@ -595,7 +592,7 @@ static int n_xbee_serial_ioctl_chars_in_buffer(struct tty_struct* tty, struct fi
       *mot = (int)blen;
     else
       if ((cpres = copy_to_user(mot, &blen, sizeof(int))) != 0)
-        printk(KERN_ALERT "in %s, copy_to_user returned %d.\n", __FUNCTION__, cpres);
+        printk(KERN_ALERT "%s: copy_to_user returned %d.\n", __FUNCTION__, cpres);
   }
   return 0;
 }
