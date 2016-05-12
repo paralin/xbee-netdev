@@ -184,8 +184,9 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge) {
   }
 
   iterations = 0;
+  // we have to wait around 2 seconds here for the xbee driver to exit AT mode
   while (1) {
-    if (iterations > 250) {
+    if (iterations > 410) {
       printk(KERN_ALERT "Timeout waiting for AT mode exit, assuming invalid.\n");
       return -ETIMEDOUT;
     }
@@ -579,7 +580,34 @@ static ssize_t n_xbee_write(struct tty_struct* tty, struct file* file, const uns
   return result;
 }
 
+static int n_xbee_serial_ioctl_chars_in_buffer(struct tty_struct* tty, struct file* file, unsigned int cmd, unsigned long arg) {
+  int cpres;
+  int blen = (int) n_xbee_chars_in_buffer(tty);
+  if (blen < 0)
+    return blen;
+  if (arg) {
+    int* mot = (int*) arg;
+    if (!file)
+      *mot = (int)blen;
+    else
+      if ((cpres = copy_to_user(mot, &blen, sizeof(int))) != 0)
+        printk(KERN_ALERT "in %s, copy_to_user returned %d.\n", __FUNCTION__, cpres);
+  }
+  return 0;
+}
+
 static int n_xbee_serial_ioctl(struct tty_struct* tty, struct file* file, unsigned int cmd, unsigned long arg) {
+  // handle read chars in buffer
+  if (cmd ==
+#ifdef FIONREAD
+      FIONREAD
+#else
+      TIOCINQ
+#endif
+     ) {
+    return n_xbee_serial_ioctl_chars_in_buffer(tty, file, cmd, arg);
+  }
+
   // Default is not implemented
   return -ENOSYS;
 }
@@ -591,7 +619,19 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
   int finlen;
 
 #ifdef N_XBEE_VERBOSE
+  int anyNonAscii, i;
   printk(KERN_INFO "n_xbee_receive_buf from %s with size %d\n", tty->name, count);
+  {
+    anyNonAscii = 0;
+    for (i = 0; i < count; i++) {
+      if (cp[i] > 255) {
+        anyNonAscii = 1;
+        break;
+      }
+    }
+    if (!anyNonAscii)
+      printk(KERN_INFO "%s: ascii input: %.*s\n", __FUNCTION__, (int)count, cp);
+  }
 #endif
 
   ENSURE_MODULE_NORET;
@@ -616,6 +656,10 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
   }
   memcpy((dbuf->buffer + dbuf->pos), cp, count);
   dbuf->pos += count;
+
+#ifdef N_XBEE_VERBOSE
+  printk(KERN_INFO "%s: receive buffer size: %d\n", __FUNCTION__, dbuf->pos);
+#endif
 
   spin_unlock(&bridge->read_lock);
 }

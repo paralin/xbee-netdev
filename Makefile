@@ -10,7 +10,11 @@ _XBEE_NET_FILES := \
 	src/n_xbee.o
 
 EXTRA_CFLAGS += -I$(PWD)/thirdparty/xbee_ansic_library/include
-EXTRA_CFLAGS += -DXBEE_ATMODE_VERBOSE -DXBEE_DEVICE_ENABLE_ATMODE -DN_XBEE_VERBOSE
+EXTRA_CFLAGS += -DXBEE_ATMODE_VERBOSE -DXBEE_DEVICE_ENABLE_ATMODE
+
+# If you enable this you will get a LOT of debugging output
+# EXTRA_CFLAGS += -DXBEE_SERIAL_VERBOSE
+EXTRA_CFLAGS += -DN_XBEE_VERBOSE
 
 obj-m += n_xbee.o
 n_xbee-objs += $(_XBEE_NET_FILES)
