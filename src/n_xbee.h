@@ -42,6 +42,7 @@ typedef struct xbee_data_buffer {
 /*
  * One bridge is created per registered xbee.
  */
+struct xbee_pending_dev;
 typedef struct xbee_serial_bridge {
   char* name;
   char* netdevName;
@@ -54,7 +55,7 @@ typedef struct xbee_serial_bridge {
   spinlock_t write_lock;
   spinlock_t read_lock;
   // during the pending state, this will be set
-  xbee_pending_dev* pend_dev;
+  struct xbee_pending_dev* pend_dev;
 } xbee_serial_bridge;
 struct xbee_serial_bridge* n_xbee_serial_bridges;
 

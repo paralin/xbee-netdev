@@ -2,6 +2,7 @@
 #include <xbee/device.h>
 #include <xbee/atcmd.h>
 #include <xbee/atmode.h>
+#include <linux/kthread.h>
 
 // Module init stuff
 MODULE_LICENSE("GPL");
@@ -368,22 +369,23 @@ int n_xbee_resolve_pending_dev(xbee_pending_dev* dev) {
     return -1;
 
   if (n_xbee_init_netdev(dev->bridge) != 0) {
-    printk(KERN_ALERT "%s n_xbee_init_netdev indicated failure, aborting.\n", dev->tty->name);
+    printk(KERN_ALERT "%s n_xbee_init_netdev indicated failure, aborting.\n", dev->bridge->tty->name);
     return -ENODEV;
   }
   dev->bridge->pend_dev = NULL;
   return 0;
 }
 
-void n_xbee_resolve_pending_dev_thread(void* data) {
+int n_xbee_resolve_pending_dev_thread(void* data) {
   xbee_pending_dev* dev = (xbee_pending_dev*) data;
   if (n_xbee_resolve_pending_dev(dev) != 0) {
     if (!dev->noFreeBridge) {
-      n_xbee_remove_bridge(bridge);
-      n_xbee_free_bridge(bridge);
+      n_xbee_remove_bridge(dev->bridge);
+      n_xbee_free_bridge(dev->bridge);
     }
   }
   kfree(dev);
+  return 0;
 }
 
 
