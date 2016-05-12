@@ -4,6 +4,9 @@
 #include <xbee/atmode.h>
 #include <linux/kthread.h>
 
+// forward declaration
+extern struct tty_ldisc_ops n_xbee_ldisc;
+
 // Module init stuff
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("paralin");
@@ -20,6 +23,11 @@ MODULE_DESCRIPTION("IP over Xbee.");
 #define ENSURE_MODULE_RET(RET) \
   if (!try_module_get(THIS_MODULE)) \
     return RET;
+
+/* == Xbee stuff == */
+// empty disaptch table for now
+const xbee_dispatch_table_entry_t xbee_frame_handlers[] =
+{};
 
 /* == Buffer stuff == */
 struct xbee_data_buffer* n_xbee_alloc_buffer(int size) {
@@ -144,9 +152,22 @@ void n_xbee_prepare_xmit(struct tty_struct* tty) {
   tty->flags |= (1 << TTY_DO_WRITE_WAKEUP);
 }
 
+// Some helper macros
+#define N_XBEE_CHECK_CANCEL \
+    if (pend_dev && pend_dev->cancel) { \
+      printk(KERN_ALERT "%s: Pending device canceled during AT setup\n", __FUNCTION__); \
+      return -ETIMEDOUT; \
+    }
+#define N_XBEE_CHECK_ITERATIONS(iter, itern) \
+    if (iterations >= itern) { \
+      printk(KERN_ALERT "%s: Timeout waiting for AT mode\n", __FUNCTION__); \
+      return -ETIMEDOUT; \
+    }
+
 // Checks the tty to see if there is really an xbee
 // on the other end, and if so, it's communicating right.
-int n_xbee_check_tty(xbee_serial_bridge* bridge) {
+// Also retreives some params about the remote dev
+int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
   int err, mode, iterations;
   xbee_dev_t* xbee = bridge->xbee_dev;
   printk(KERN_INFO "Putting board into AT mode to check values...\n");
@@ -156,10 +177,9 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge) {
   }
   iterations = 0;
   while (1) {
-    if (iterations >= 500) {
-      printk(KERN_ALERT "Timeout waiting for AT mode, assuming invalid.\n");
-      return -ETIMEDOUT;
-    }
+    N_XBEE_CHECK_CANCEL;
+    N_XBEE_CHECK_ITERATIONS(iterations, 400);
+
     mode = xbee_atmode_tick(xbee);
 
     if (mode == XBEE_MODE_COMMAND) {
@@ -176,20 +196,36 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge) {
     iterations ++;
   }
 
+  // Fire off a bunch of AT commands and set handlers
+  if ((err = xbee_cmd_init_device(xbee)) != 0) {
+    printk(KERN_ALERT "%s: Error initing atcmd mode: %d\n", __FUNCTION__, err);
+    return err;
+  }
+
+  iterations = 0;
+  while ((err = xbee_cmd_query_status(xbee)) == -EBUSY) {
+    N_XBEE_CHECK_CANCEL;
+    N_XBEE_CHECK_ITERATIONS(iterations, 300);
+    msleep(5);
+    iterations++;
+  }
+  if (err != 0) {
+    printk(KERN_ALERT "%s: Error waiting for AT queries: %d\n", __FUNCTION__, err);
+    return err;
+  }
+
   // exit AT mode
   printk(KERN_INFO "Exiting AT mode...\n");
   if ((err = xbee_atmode_exit(xbee)) != 0) {
-    printk(KERN_ALERT "Unable to exit AT mode, error: %d\n", err);
+    printk(KERN_ALERT "%s: Unable to exit AT mode, error: %d\n", __FUNCTION__, err);
     return err;
   }
 
   iterations = 0;
   // we have to wait around 2 seconds here for the xbee driver to exit AT mode
   while (1) {
-    if (iterations > 410) {
-      printk(KERN_ALERT "%s: Timeout waiting for AT mode exit, assuming invalid.\n", __FUNCTION__);
-      return -ETIMEDOUT;
-    }
+    N_XBEE_CHECK_CANCEL;
+    N_XBEE_CHECK_ITERATIONS(iterations, 410);
 
     mode = xbee_atmode_tick(xbee);
 
@@ -327,6 +363,11 @@ void n_xbee_free_netdev(xbee_serial_bridge* n) {
   n->netdev = NULL;
 }
 
+// Check the size of the read buffer
+// When a full frame is received, pass the frame to the TCP headers.
+void n_xbee_handle_runtime_frames(xbee_serial_bridge* bridge) {
+}
+
 /* = XBEE Detection and Setup  =
  *
  * This driver relies on user-space code to
@@ -353,15 +394,12 @@ static void n_xbee_serial_close(struct tty_struct* tty) {
   n_xbee_free_bridge(bridge);
 }
 
-// forward declaration
-extern struct tty_ldisc_ops n_xbee_ldisc;
-
 // if return anything but zero, call n_xbee_remove_bridge and n_xbee_free_bridge if NOT noFreeBridge
 int n_xbee_resolve_pending_dev(xbee_pending_dev* dev) {
   if (dev->cancel)
     return -1;
 
-  if (n_xbee_check_tty(dev->bridge) != 0) {
+  if (n_xbee_check_tty(dev->bridge, dev) != 0) {
     printk(KERN_ALERT "%s: Couldn't contact xbee on %s, make sure it's a valid xbee and the baud is correct.\n", __FUNCTION__, dev->bridge->tty->name);
     return -ENODEV;
   }
@@ -666,8 +704,12 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
 #if defined(N_XBEE_VERBOSE) && defined(XBEE_SERIAL_VERBOSE)
   printk(KERN_INFO "%s: receive buffer size: %d\n", __FUNCTION__, dbuf->pos);
 #endif
-
   spin_unlock(&bridge->read_lock);
+
+  // If we're not pending device setup
+  if (!bridge->pend_dev && bridge->netdevInitialized) {
+    n_xbee_handle_runtime_frames(bridge);
+  }
 }
 
 static void n_xbee_write_wakeup(struct tty_struct* tty) {
@@ -698,11 +740,11 @@ struct tty_ldisc_ops n_xbee_ldisc = {
 
 static int __init n_xbee_init(void) {
   int result;
-  printk(KERN_INFO "xbee-net initializing...\n");
+  printk(KERN_INFO "%s: xbee-net initializing...\n", __FUNCTION__);
 
   result = tty_register_ldisc(N_XBEE_LISC, &n_xbee_ldisc);
   if (result) {
-    printk(KERN_ALERT "Registering line discipline failed: %d\n", result);
+    printk(KERN_ALERT "%s: Registering line discipline failed: %d\n", __FUNCTION__, result);
     return result;
   }
 
@@ -710,7 +752,7 @@ static int __init n_xbee_init(void) {
 }
 
 static void __exit n_xbee_cleanup(void) {
-  printk(KERN_INFO "xbee-net shutting down...\n");
+  printk(KERN_INFO "%s: xbee-net shutting down...\n", __FUNCTION__);
   n_xbee_free_all_bridges();
   tty_unregister_ldisc(N_XBEE_LISC);
 }

@@ -7,6 +7,11 @@ _XBEE_NET_FILES := \
 	$(_XBEE_SRC_DIR)/kernel/xbee_readline.o \
 	$(_XBEE_SRC_DIR)/kernel/xbee_serial_kernel.o \
 	$(_XBEE_SRC_DIR)/xbee/xbee_atmode.o \
+	$(_XBEE_SRC_DIR)/xbee/xbee_atcmd.o \
+	$(_XBEE_SRC_DIR)/xbee/xbee_device.o \
+	$(_XBEE_SRC_DIR)/util/swapbytes.o \
+	$(_XBEE_SRC_DIR)/util/hexstrtobyte.o \
+	$(_XBEE_SRC_DIR)/wpan/wpan_types.o \
 	src/n_xbee.o
 
 EXTRA_CFLAGS += -I$(PWD)/thirdparty/xbee_ansic_library/include
