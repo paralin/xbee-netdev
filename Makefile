@@ -1,10 +1,12 @@
 _XBEE_SRC_DIR := ./thirdparty/xbee_ansic_library/src
-_XBEE_NET_FILES := ./src/n_xbee.o \
+_XBEE_NET_FILES := \
 	$(_XBEE_SRC_DIR)/kernel/xbee_platform_kernel.o \
 	$(_XBEE_SRC_DIR)/kernel/xbee_readline.o \
-	$(_XBEE_SRC_DIR)/kernel/xbee_serial_kernel.o
+	$(_XBEE_SRC_DIR)/kernel/xbee_serial_kernel.o \
+	$(_XBEE_SRC_DIR)/xbee/xbee_atmode.o
 
-obj-m := $(_XBEE_NET_FILES)
+obj-m := n_xbee.o
+n_xbee-objs := $(_XBEE_NET_FILES)
 
 KERNELDIR := /usr/src/linux
 EXTRA_CFLAGS += -I$(PWD)/thirdparty/xbee_ansic_library/include
@@ -25,4 +27,4 @@ driver:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
 
 daemon:
-	$(CC) -o ldisc_daemon ./src/ldisc_daemon.c
+	$(CC) -o ldisc_daemon ./ldisc_daemon.c

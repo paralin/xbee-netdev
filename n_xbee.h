@@ -12,6 +12,7 @@
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/tty.h>
+#include <linux/delay.h>
 #include <asm/uaccess.h>
 
 #include <xbee/device.h>

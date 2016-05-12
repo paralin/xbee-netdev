@@ -1,6 +1,7 @@
 #include "n_xbee.h"
 #include <xbee/device.h>
 #include <xbee/atcmd.h>
+#include <xbee/atmode.h>
 
 // Module init stuff
 MODULE_LICENSE("GPL");
@@ -135,13 +136,64 @@ xbee_serial_bridge* n_xbee_find_bridge_bytty(struct tty_struct* tty) {
 // Prepare to transmit by waking up the device, etc
 void n_xbee_prepare_xmit(struct tty_struct* tty) {
   tty->flags |= (1 << TTY_DO_WRITE_WAKEUP);
-  // to write, use tty->driver->ops->write(tty, frame, len)
 }
 
 // Checks the tty to see if there is really an xbee
 // on the other end, and if so, it's communicating right.
-int n_xbee_check_tty(struct tty_struct* tty) {
-  // TODO: implement this
+int n_xbee_check_tty(xbee_serial_bridge* bridge) {
+  int err, mode, iterations;
+  xbee_dev_t* xbee = bridge->xbee_dev;
+  printk(KERN_INFO "Putting board into AT mode to check values...\n");
+  if ((err = xbee_atmode_enter(xbee)) != 0) {
+    printk(KERN_ALERT "Unable to put board into AT mode, error: %d\n", err);
+    return err;
+  }
+  iterations = 0;
+  while (1) {
+    if (iterations >= 500) {
+      printk(KERN_ALERT "Timeout waiting for AT mode, assuming invalid.\n");
+      return -ETIMEDOUT;
+    }
+    mode = xbee_atmode_tick(xbee);
+
+    if (mode == XBEE_MODE_COMMAND) {
+      printk(KERN_INFO "Successfully entered AT mode...\n");
+      break;
+    }
+    else if (mode == XBEE_MODE_IDLE) {
+      printk(KERN_ALERT "Never entered AT mode (in idle mode), assuming failure.\n");
+      return -ETIMEDOUT;
+    }
+
+    // sleep 5 milliseconds
+    msleep(5);
+    iterations ++;
+  }
+
+  // exit AT mode
+  printk(KERN_INFO "Exiting AT mode...\n");
+  if ((err = xbee_atmode_exit(xbee)) != 0) {
+    printk(KERN_ALERT "Unable to exit AT mode, error: %d\n", err);
+    return err;
+  }
+
+  iterations = 0;
+  while (1) {
+    if (iterations > 250) {
+      printk(KERN_ALERT "Timeout waiting for AT mode exit, assuming invalid.\n");
+      return -ETIMEDOUT;
+    }
+
+    mode = xbee_atmode_tick(xbee);
+
+    if (mode == XBEE_MODE_IDLE) {
+      printk(KERN_INFO "Successfully exited AT mode.\n");
+      break;
+    }
+
+    msleep(5);
+    iterations++;
+  }
 
   return 0;
 }
@@ -329,12 +381,6 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   rttyname = strncmp("tty", tty->name, 3) == 0 ? (tty->name + 3) : tty->name;
   nlen = strlen(rttyname);
 
-  // verify the tty
-  if (n_xbee_check_tty(tty) != 0) {
-    printk(KERN_ALERT "Couldn't contact xbee on %s, make sure it's a valid xbee and the baud is correct.\n", tty->name);
-    return -ENODEV;
-  }
-
   bridge = (xbee_serial_bridge*)kmalloc(sizeof(xbee_serial_bridge), GFP_KERNEL);
   spin_lock_init(&bridge->write_lock);
   spin_lock_init(&bridge->read_lock);
@@ -367,6 +413,15 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   strcpy(bridge->netdevName + strlen(XBEE_NETDEV_PREFIX), rttyname);
 
   n_xbee_insert_bridge(bridge);
+
+  // verify the xbee exists and load its information
+  if (n_xbee_check_tty(bridge) != 0) {
+    printk(KERN_ALERT "Couldn't contact xbee on %s, make sure it's a valid xbee and the baud is correct.\n", tty->name);
+    n_xbee_remove_bridge(bridge);
+    n_xbee_free_bridge(bridge);
+    return -ENODEV;
+  }
+
   if (n_xbee_init_netdev(bridge) != 0) {
     printk(KERN_ALERT "%s n_xbee_init_netdev indicated failure, aborting.\n", tty->name);
     n_xbee_remove_bridge(bridge);
