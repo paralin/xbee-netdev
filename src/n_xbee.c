@@ -63,6 +63,11 @@ void n_xbee_free_bridge(xbee_serial_bridge* n) {
     kfree(n->netdevName);
   if (n->recvbuf)
     n_xbee_free_buffer(n->recvbuf);
+  // DO NOT FREE pend_dev
+  if (n->pend_dev) {
+    n->pend_dev->cancel = 1;
+    n->pend_dev->noFreeBridge = 1;
+  }
   // maybe unnecessary, do it anyway
   spin_unlock(&n->read_lock);
   spin_unlock(&n->write_lock);
@@ -349,6 +354,39 @@ static void n_xbee_serial_close(struct tty_struct* tty) {
 // forward declaration
 extern struct tty_ldisc_ops n_xbee_ldisc;
 
+// if return anything but zero, call n_xbee_remove_bridge and n_xbee_free_bridge if NOT noFreeBridge
+int n_xbee_resolve_pending_dev(xbee_pending_dev* dev) {
+  if (dev->cancel)
+    return -1;
+
+  if (n_xbee_check_tty(dev->bridge) != 0) {
+    printk(KERN_ALERT "Couldn't contact xbee on %s, make sure it's a valid xbee and the baud is correct.\n", dev->bridge->tty->name);
+    return -ENODEV;
+  }
+
+  if (dev->cancel)
+    return -1;
+
+  if (n_xbee_init_netdev(dev->bridge) != 0) {
+    printk(KERN_ALERT "%s n_xbee_init_netdev indicated failure, aborting.\n", dev->tty->name);
+    return -ENODEV;
+  }
+  dev->bridge->pend_dev = NULL;
+  return 0;
+}
+
+void n_xbee_resolve_pending_dev_thread(void* data) {
+  xbee_pending_dev* dev = (xbee_pending_dev*) data;
+  if (n_xbee_resolve_pending_dev(dev) != 0) {
+    if (!dev->noFreeBridge) {
+      n_xbee_remove_bridge(bridge);
+      n_xbee_free_bridge(bridge);
+    }
+  }
+  kfree(dev);
+}
+
+
 /*
  * Called when the user-space daemon attaches to a
  * serial line. We should allocate the network device
@@ -393,6 +431,7 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   bridge->netdevInitialized = 0;
   bridge->netdev = 0;
   bridge->recvbuf = n_xbee_alloc_buffer(N_XBEE_BUFFER_SIZE);
+  bridge->tty->receive_room = bridge->recvbuf->size;
 
   // we have our own xbee device init here, the other doesn't work
   bridge->xbee_dev = (xbee_dev_t*) kmalloc(sizeof(xbee_dev_t), GFP_KERNEL);
@@ -412,23 +451,17 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   strcpy(bridge->netdevName, XBEE_NETDEV_PREFIX);
   strcpy(bridge->netdevName + strlen(XBEE_NETDEV_PREFIX), rttyname);
 
-  n_xbee_insert_bridge(bridge);
 
   // verify the xbee exists and load its information
-  if (n_xbee_check_tty(bridge) != 0) {
-    printk(KERN_ALERT "Couldn't contact xbee on %s, make sure it's a valid xbee and the baud is correct.\n", tty->name);
-    n_xbee_remove_bridge(bridge);
-    n_xbee_free_bridge(bridge);
-    return -ENODEV;
-  }
+  // NOTE: moved, we cannot do this here. let's init the netdev elsewhere too.
+  // instead, let's register a pending dev
+  bridge->pend_dev = kmalloc(sizeof(xbee_pending_dev), GFP_KERNEL);
+  bridge->pend_dev->bridge = bridge;
+  bridge->pend_dev->cancel = 0;
+  bridge->pend_dev->noFreeBridge = 0;
 
-  if (n_xbee_init_netdev(bridge) != 0) {
-    printk(KERN_ALERT "%s n_xbee_init_netdev indicated failure, aborting.\n", tty->name);
-    n_xbee_remove_bridge(bridge);
-    n_xbee_free_bridge(bridge);
-    return -ENODEV;
-  }
-
+  n_xbee_insert_bridge(bridge);
+  kthread_run(n_xbee_resolve_pending_dev_thread, (void*)bridge->pend_dev, "xbee_penddev");
   return 0;
 }
 
@@ -511,6 +544,11 @@ static ssize_t n_xbee_write(struct tty_struct* tty, struct file* file, const uns
   struct xbee_serial_bridge* bridge;
   int result;
 
+#ifdef N_XBEE_VERBOSE
+  int anyNonAscii, i;
+  printk(KERN_INFO "%s: to %s, size %d\n", __FUNCTION__, tty->name, (int)nr);
+#endif
+
   ENSURE_MODULE;
   bridge = n_xbee_find_bridge_bytty(tty);
   if (!bridge)
@@ -518,8 +556,23 @@ static ssize_t n_xbee_write(struct tty_struct* tty, struct file* file, const uns
 
   // acquire write lock
   spin_lock(&bridge->write_lock);
+  tty->flags |= (1 << TTY_DO_WRITE_WAKEUP);
   result = tty->driver->ops->write(tty, buf, nr);
   spin_unlock(&bridge->write_lock);
+#ifdef N_XBEE_VERBOSE
+  printk(KERN_INFO "%s: to %s, writing result %d\n", __FUNCTION__, tty->name, result);
+  {
+    anyNonAscii = 0;
+    for (i = 0; i < nr; i++) {
+      if (buf[i] > 255) {
+        anyNonAscii = 1;
+        break;
+      }
+    }
+    if (!anyNonAscii)
+      printk(KERN_INFO "%s: ascii output: %.*s\n", __FUNCTION__, (int)nr, buf);
+  }
+#endif
 
   return result;
 }
@@ -534,6 +587,10 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
   struct xbee_serial_bridge* bridge;
   struct xbee_data_buffer* dbuf;
   int finlen;
+
+#ifdef N_XBEE_VERBOSE
+  printk(KERN_INFO "n_xbee_receive_buf from %s with size %d\n", tty->name, count);
+#endif
 
   ENSURE_MODULE_NORET;
 

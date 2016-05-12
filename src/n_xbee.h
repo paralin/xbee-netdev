@@ -1,7 +1,6 @@
 #pragma once
 #ifndef _N_XBEE_H
 #define _N_XBEE_H
-#define XBEE_DEVICE_ENABLE_ATMODE
 
 #include <linux/module.h>    // included for all kernel modules
 #include <linux/kernel.h>    // included for KERN_INFO
@@ -39,6 +38,7 @@ typedef struct xbee_data_buffer {
   // NOT an index, its a size 1-index.
   int pos;
 } xbee_data_buffer;
+
 /*
  * One bridge is created per registered xbee.
  */
@@ -53,6 +53,8 @@ typedef struct xbee_serial_bridge {
   xbee_dev_t* xbee_dev;
   spinlock_t write_lock;
   spinlock_t read_lock;
+  // during the pending state, this will be set
+  xbee_pending_dev* pend_dev;
 } xbee_serial_bridge;
 struct xbee_serial_bridge* n_xbee_serial_bridges;
 
@@ -60,6 +62,13 @@ struct xbee_serial_bridge* n_xbee_serial_bridges;
 typedef struct xbee_netdev_priv {
   xbee_serial_bridge* bridge;
 } xbee_netdev_priv;
+
+typedef struct xbee_pending_dev {
+  xbee_serial_bridge* bridge;
+  // set to true if canceled
+  int cancel;
+  int noFreeBridge;
+} xbee_pending_dev;
 
 // kernel module functions not in header file
 #endif
