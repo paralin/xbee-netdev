@@ -9,6 +9,8 @@ obj-m := $(_XBEE_NET_FILES)
 KERNELDIR := /usr/src/linux
 EXTRA_CFLAGS += -I$(PWD)/thirdparty/xbee_ansic_library/include
 
+EXTRA_CFLAGS += -DXBEE_ATMODE_VERBOSE
+
 CC := gcc -Wall -Werror
 
 default: driver daemon

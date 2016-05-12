@@ -27,7 +27,8 @@
 // Size in bytes of the receive buffer
 // This should be a bit bigger than the max
 // frame we would ever receive, to give some margin
-#define N_XBEE_BUFFER_SIZE (2*N_XBEE_MAXFRAME)
+// we give a massive margin of 5x to be safe.
+#define N_XBEE_BUFFER_SIZE (5 * N_XBEE_MAXFRAME)
 // We buffer received data
 typedef struct xbee_data_buffer {
   unsigned char* buffer;

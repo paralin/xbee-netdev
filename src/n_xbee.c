@@ -474,6 +474,43 @@ static int n_xbee_serial_ioctl(struct tty_struct* tty, struct file* file, unsign
   return -ENOSYS;
 }
 
+//theoretically here we could get in an infite loop of dropping the entire buffer
+static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, char* fp, int count) {
+  struct xbee_serial_bridge* bridge;
+  struct xbee_data_buffer* dbuf;
+  int finlen;
+
+  ENSURE_MODULE_NORET;
+
+  bridge = n_xbee_find_bridge_bytty(tty);
+  if (!bridge)
+    return;
+  dbuf = bridge->recvbuf;
+
+  spin_lock(&bridge->read_lock);
+
+  if (count > dbuf->size) {
+    printk(KERN_ALERT "%s reading %d bytes which is more than the entire receive buffer size %d\n", tty->name, count, dbuf->size);
+    count = dbuf->size;
+  }
+
+  finlen = dbuf->pos + count;
+  if (finlen > dbuf->size) {
+    printk(KERN_ALERT "%s reading %d bytes would overflow recvbuf with %d/%d bytes, dropping existing buffer\n", tty->name, count, dbuf->pos, dbuf->size);
+    dbuf->pos = 0;
+    finlen = count;
+  }
+  memcpy((dbuf->buffer + dbuf->pos), cp, count);
+  dbuf->pos += count;
+
+  spin_unlock(&bridge->read_lock);
+}
+
+static void n_xbee_write_wakeup(struct tty_struct* tty) {
+  tty->flags &= ~(1 << TTY_DO_WRITE_WAKEUP);
+  //maybe wakeup netdev queue here?
+}
+
 // Line discipline, allows us to assign ownership
 // of a serial device to this driver.
 // NOTE: make sure to call ENSURE_MODULE FIRST!!
@@ -491,6 +528,8 @@ struct tty_ldisc_ops n_xbee_ldisc = {
   .flush_buffer = n_xbee_flush_buffer,
   .chars_in_buffer = n_xbee_chars_in_buffer,
   .ioctl = n_xbee_serial_ioctl,
+  .receive_buf = n_xbee_receive_buf,
+  .write_wakeup = n_xbee_write_wakeup
 };
 
 static int __init n_xbee_init(void) {
