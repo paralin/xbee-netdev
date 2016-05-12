@@ -47,6 +47,7 @@ typedef struct xbee_serial_bridge {
   struct xbee_serial_bridge* next;
   struct tty_struct* tty;
   struct xbee_data_buffer* recvbuf;
+  xbee_dev_t* xbee_dev;
   spinlock_t write_lock;
   spinlock_t read_lock;
 } xbee_serial_bridge;

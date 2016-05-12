@@ -39,6 +39,11 @@ void n_xbee_init_bridge_ll(void) {
   n_xbee_serial_bridges = NULL;
 }
 
+// Frees the xbee_dev_t
+void n_xbee_free_xbee_dev(xbee_dev_t* dev) {
+  kfree(dev);
+}
+
 // Just free, don't remove properly.
 // Also frees all netdevs etc.
 void n_xbee_free_netdev(xbee_serial_bridge* n);
@@ -51,6 +56,8 @@ void n_xbee_free_bridge(xbee_serial_bridge* n) {
     n_xbee_free_netdev(n);
   if (n->name)
     kfree(n->name);
+  if (n->xbee_dev)
+    n_xbee_free_xbee_dev(n->xbee_dev);
   if (n->netdevName)
     kfree(n->netdevName);
   if (n->recvbuf)
@@ -271,6 +278,17 @@ void n_xbee_free_netdev(xbee_serial_bridge* n) {
  * is called, which results in a new network device being created
  * to handle the serial line.
  */
+struct n_xbee_ldisc;
+
+static int n_xbee_is_awake(xbee_dev_t* xbee) {
+  // default, return on always.
+  return 1;
+}
+
+static int n_xbee_reset(xbee_dev_t* xbee, bool_t doReset) {
+  // do nothing here.
+  return 0;
+}
 
 // Called when the userspace closes the tty.
 static void n_xbee_serial_close(struct tty_struct* tty) {
@@ -338,6 +356,20 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   bridge->netdevInitialized = 0;
   bridge->netdev = 0;
   bridge->recvbuf = n_xbee_alloc_buffer(N_XBEE_BUFFER_SIZE);
+
+  // we have our own xbee device init here, the other doesn't work
+  bridge->xbee_dev = (xbee_dev_t*) kmalloc(sizeof(xbee_dev_t), GFP_KERNEL);
+  memset(bridge->xbee_dev, 0, sizeof(xbee_dev_t));
+  bridge->xbee_dev->is_awake = n_xbee_is_awake;
+  bridge->xbee_dev->reset = n_xbee_reset;
+  bridge->xbee_dev->serport.baudrate = tty_get_baud_rate(tty);
+  bridge->xbee_dev->tty = tty;
+  bridge->xbee_dev->ldisc_ops = n_xbee_ldisc;
+  bridge->xbee_dev->guard_time = 1000;
+  bridge->xbee_dev->escape_char = '+';
+  bridge->xbee_dev->idle_timeout = 100;
+  // Don't use flow control TODO
+  bridge->xbee_dev->flags &= ~XBEE_DEV_FLAG_USE_FLOWCONTROL;
 
   ndevnlen = strlen(XBEE_NETDEV_PREFIX) + nlen;
   bridge->netdevName = (char*)kmalloc(sizeof(char) * (ndevnlen + 1), GFP_KERNEL);
