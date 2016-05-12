@@ -548,7 +548,9 @@ static ssize_t n_xbee_write(struct tty_struct* tty, struct file* file, const uns
   int result;
 
 #ifdef N_XBEE_VERBOSE
+#ifdef XBEE_SERIAL_VERBOSE
   int anyNonAscii, i;
+#endif
   printk(KERN_INFO "%s: to %s, size %d\n", __FUNCTION__, tty->name, (int)nr);
 #endif
 
@@ -564,6 +566,7 @@ static ssize_t n_xbee_write(struct tty_struct* tty, struct file* file, const uns
   spin_unlock(&bridge->write_lock);
 #ifdef N_XBEE_VERBOSE
   printk(KERN_INFO "%s: to %s, writing result %d\n", __FUNCTION__, tty->name, result);
+#if defined(XBEE_SERIAL_VERBOSE)
   {
     anyNonAscii = 0;
     for (i = 0; i < nr; i++) {
@@ -575,6 +578,7 @@ static ssize_t n_xbee_write(struct tty_struct* tty, struct file* file, const uns
     if (!anyNonAscii)
       printk(KERN_INFO "%s: ascii output: %.*s\n", __FUNCTION__, (int)nr, buf);
   }
+#endif
 #endif
 
   return result;
@@ -619,8 +623,12 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
   int finlen;
 
 #ifdef N_XBEE_VERBOSE
+#ifdef XBEE_SERIAL_VERBOSE
   int anyNonAscii, i;
+#endif
   printk(KERN_INFO "n_xbee_receive_buf from %s with size %d\n", tty->name, count);
+#if defined(XBEE_SERIAL_VERBOSE)
+  printk(KERN_INFO "%s: receive buffer size: %d\n", __FUNCTION__, dbuf->pos);
   {
     anyNonAscii = 0;
     for (i = 0; i < count; i++) {
@@ -632,6 +640,7 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
     if (!anyNonAscii)
       printk(KERN_INFO "%s: ascii input: %.*s\n", __FUNCTION__, (int)count, cp);
   }
+#endif
 #endif
 
   ENSURE_MODULE_NORET;
@@ -657,7 +666,7 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
   memcpy((dbuf->buffer + dbuf->pos), cp, count);
   dbuf->pos += count;
 
-#ifdef N_XBEE_VERBOSE
+#if defined(N_XBEE_VERBOSE) && defined(XBEE_SERIAL_VERBOSE)
   printk(KERN_INFO "%s: receive buffer size: %d\n", __FUNCTION__, dbuf->pos);
 #endif
 
