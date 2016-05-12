@@ -1,4 +1,8 @@
-_XBEE_NET_FILES := ./src/n_xbee.o
+_XBEE_SRC_DIR := ./thirdparty/xbee_ansic_library/src
+_XBEE_NET_FILES := ./src/n_xbee.o \
+	$(_XBEE_SRC_DIR)/kernel/xbee_platform_kernel.o \
+	$(_XBEE_SRC_DIR)/kernel/xbee_readline.o \
+	$(_XBEE_SRC_DIR)/kernel/xbee_serial_kernel.o
 
 obj-m := $(_XBEE_NET_FILES)
 
@@ -10,7 +14,10 @@ CC := gcc -Wall -Werror
 default: driver daemon
 
 clean:
-	cd src && rm -f *.ko *.o *.mod.c Module.symvers modules.order
+	-rm -f Module.symvers modules.order
+	-find . -type f -name '*.o' -delete
+	-find . -type f -name '*.ko' -delete
+	-find . -type f -name '*.mod.c' -delete
 
 driver:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules

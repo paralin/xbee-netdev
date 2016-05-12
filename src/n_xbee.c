@@ -15,6 +15,25 @@ MODULE_DESCRIPTION("IP over Xbee.");
   if (!try_module_get(THIS_MODULE)) \
     return;
 
+#define ENSURE_MODULE_RET(RET) \
+  if (!try_module_get(THIS_MODULE)) \
+    return RET;
+
+/* == Buffer stuff == */
+struct xbee_data_buffer* n_xbee_alloc_buffer(int size) {
+  struct xbee_data_buffer* buf = kmalloc(sizeof(xbee_data_buffer), GFP_KERNEL);
+  buf->size = size;
+  buf->buffer = kmalloc(sizeof(unsigned char) * size, GFP_KERNEL);
+  buf->pos = 0;
+  return buf;
+}
+
+void n_xbee_free_buffer(struct xbee_data_buffer* buf) {
+  if (buf->buffer)
+    kfree(buf->buffer);
+  kfree(buf);
+}
+
 /* = Serial Bridge Stuff = */
 void n_xbee_init_bridge_ll(void) {
   n_xbee_serial_bridges = NULL;
@@ -25,12 +44,20 @@ void n_xbee_init_bridge_ll(void) {
 void n_xbee_free_netdev(xbee_serial_bridge* n);
 void n_xbee_free_bridge(xbee_serial_bridge* n) {
   if (!n) return;
+  // grab read and write locks
+  spin_lock(&n->read_lock);
+  spin_lock(&n->write_lock);
   if (n->netdevInitialized)
     n_xbee_free_netdev(n);
   if (n->name)
     kfree(n->name);
   if (n->netdevName)
-    kfree(n->name);
+    kfree(n->netdevName);
+  if (n->recvbuf)
+    n_xbee_free_buffer(n->recvbuf);
+  // maybe unnecessary, do it anyway
+  spin_unlock(&n->read_lock);
+  spin_unlock(&n->write_lock);
   kfree(n);
 }
 
@@ -75,10 +102,21 @@ void n_xbee_free_all_bridges(void) {
 }
 
 // Find by name
-xbee_serial_bridge* n_xbee_find_bridge(const char* name) {
+xbee_serial_bridge* n_xbee_find_bridge_byname(const char* name) {
   xbee_serial_bridge* n = n_xbee_serial_bridges;
   while (n) {
     if (strcmp(n->name, name) == 0)
+      return n;
+    n = n->next;
+  }
+  return NULL;
+}
+
+// Find by tty
+xbee_serial_bridge* n_xbee_find_bridge_bytty(struct tty_struct* tty) {
+  xbee_serial_bridge* n = n_xbee_serial_bridges;
+  while (n) {
+    if (n->tty == tty)
       return n;
     n = n->next;
   }
@@ -153,11 +191,17 @@ static int n_xbee_netdev_change_mtu(struct net_device* dev, int new_mtu) {
   return 0;
 }
 
+static int n_xbee_netdev_ioctl(struct net_device* dev, struct ifreq* rq, int cmd) {
+  // Default is not implemented
+  return -ENOSYS;
+}
+
 static const struct net_device_ops n_xbee_netdev_ops = {
   .ndo_init = n_xbee_netdev_init_late,
   .ndo_open = n_xbee_netdev_open,
   .ndo_stop = n_xbee_netdev_release,
   .ndo_change_mtu = n_xbee_netdev_change_mtu,
+  .ndo_do_ioctl = n_xbee_netdev_ioctl
 };
 
 static void n_xbee_netdev_init_early(struct net_device* dev) {
@@ -191,7 +235,6 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
   priv = netdev_priv(ndev);
   memset(priv, 0, sizeof(*priv));
   priv->bridge = bridge;
-  spin_lock_init(&priv->bridge->write_lock);
 
   if ((err = register_netdev(ndev)) != 0) {
     printk(KERN_ALERT "Failed to register netdev %s with error %i...", bridge->netdevName, err);
@@ -236,7 +279,7 @@ static void n_xbee_serial_close(struct tty_struct* tty) {
   ENSURE_MODULE_NORET;
 
   printk(KERN_INFO "TTY %s detached.\n", tty->name);
-  bridge = n_xbee_find_bridge((const char*) tty->name);
+  bridge = n_xbee_find_bridge_byname((const char*) tty->name);
   if (!bridge) {
     printk(KERN_ALERT "TTY %s not found/previously initialized...\n", tty->name);
     return;
@@ -266,7 +309,7 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   // Find the existing allocated netdev for this (shouldn't happen)
   // .. or make a new one.
   printk(KERN_INFO "TTY %s attached.\n", tty->name);
-  bridge = n_xbee_find_bridge((const char*) tty->name);
+  bridge = n_xbee_find_bridge_byname((const char*) tty->name);
   if (bridge) {
     printk(KERN_ALERT "TTY %s was previously attached, shutting it down first...\n", tty->name);
     n_xbee_remove_bridge(bridge);
@@ -284,6 +327,8 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   }
 
   bridge = (xbee_serial_bridge*)kmalloc(sizeof(xbee_serial_bridge), GFP_KERNEL);
+  spin_lock_init(&bridge->write_lock);
+  spin_lock_init(&bridge->read_lock);
   bridge->tty = tty;
   bridge->name = (char*)kmalloc(sizeof(char) * (strlen(tty->name) + 1), GFP_KERNEL);
   bridge->name[strlen(tty->name)] = '\0';
@@ -292,6 +337,7 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   bridge->next = 0;
   bridge->netdevInitialized = 0;
   bridge->netdev = 0;
+  bridge->recvbuf = n_xbee_alloc_buffer(N_XBEE_BUFFER_SIZE);
 
   ndevnlen = strlen(XBEE_NETDEV_PREFIX) + nlen;
   bridge->netdevName = (char*)kmalloc(sizeof(char) * (ndevnlen + 1), GFP_KERNEL);
@@ -310,6 +356,103 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   return 0;
 }
 
+static ssize_t n_xbee_chars_in_buffer(struct tty_struct* tty) {
+  struct xbee_serial_bridge* bridge;
+  ENSURE_MODULE;
+  bridge = n_xbee_find_bridge_bytty(tty);
+  if (!bridge)
+    return -ENODEV;
+  return bridge->recvbuf->pos;
+}
+
+// locks read_lock
+static void n_xbee_flush_buffer(struct tty_struct* tty) {
+  struct xbee_serial_bridge* bridge;
+  ENSURE_MODULE_NORET;
+
+  // Get the pointer to the bridge
+  bridge = n_xbee_find_bridge_bytty(tty);
+  if (!bridge)
+    return;
+  // Acquire read lock
+  spin_lock(&bridge->read_lock);
+  printk(KERN_INFO "%s flushing buffer by kernel request.\n", tty->name);
+  bridge->recvbuf->pos = 0;
+  spin_unlock(&bridge->read_lock);
+}
+
+// Userspace requests a read from a tty
+static ssize_t n_xbee_read(struct tty_struct* tty, struct file* file, unsigned char __user *buf, size_t nr) {
+  struct xbee_serial_bridge* bridge;
+  int nleft;
+  int i;
+  int ntread;
+  int cpres;
+
+  ENSURE_MODULE_RET(-1);
+  bridge = n_xbee_find_bridge_bytty(tty);
+  if (!bridge)
+    return -ENODEV;
+
+  if (!bridge->recvbuf->pos)
+    return 0;
+    // return -EAGAIN;
+
+  // acquire read lock
+  spin_lock(&bridge->read_lock);
+
+  // read as much as we can
+  ntread = bridge->recvbuf->pos;
+  if (nr < ntread)
+    ntread = nr;
+
+  // Potential optimization: don't always shift back here.
+  // copy out the data
+
+  // if file == NULL we are in kernel space memory
+  if (!file)
+    memcpy(buf, bridge->recvbuf->buffer, ntread);
+  else
+    if ((cpres = copy_to_user(buf, bridge->recvbuf->buffer, ntread)) != 0)
+      printk(KERN_ALERT "in %s, copy_to_user returned %d.\n", __FUNCTION__, cpres);
+
+  // nleft = amount of bytes left in the buffer
+  nleft = bridge->recvbuf->pos - ntread;
+  if (nleft <= 0)
+    bridge->recvbuf->pos = 0;
+  else {
+    //index of first byte we need to store is pos
+    for (i = 0; i < nleft; i++)
+      bridge->recvbuf->buffer[i] = bridge->recvbuf->buffer[i + bridge->recvbuf->pos];
+    bridge->recvbuf->pos = nleft;
+  }
+
+  spin_unlock(&bridge->read_lock);
+  return ntread;
+}
+
+static ssize_t n_xbee_write(struct tty_struct* tty, struct file* file, const unsigned char* buf, size_t nr) {
+  struct xbee_serial_bridge* bridge;
+  int result;
+
+  ENSURE_MODULE;
+  bridge = n_xbee_find_bridge_bytty(tty);
+  if (!bridge)
+    return -ENODEV;
+
+  // acquire write lock
+  spin_lock(&bridge->write_lock);
+  result = tty->driver->ops->write(tty, buf, nr);
+  spin_unlock(&bridge->write_lock);
+
+  return result;
+}
+
+static int n_xbee_serial_ioctl(struct tty_struct* tty, struct file* file, unsigned int cmd, unsigned long arg) {
+  // Default is not implemented
+  return -ENOSYS;
+}
+
 // Line discipline, allows us to assign ownership
 // of a serial device to this driver.
 // NOTE: make sure to call ENSURE_MODULE FIRST!!
@@ -322,6 +465,11 @@ struct tty_ldisc_ops n_xbee_ldisc = {
   .name  = "n_xbee",
   .open  = n_xbee_serial_open,
   .close = n_xbee_serial_close,
+  .read  = n_xbee_read,
+  .write = n_xbee_write,
+  .flush_buffer = n_xbee_flush_buffer,
+  .chars_in_buffer = n_xbee_chars_in_buffer,
+  .ioctl = n_xbee_serial_ioctl,
 };
 
 static int __init n_xbee_init(void) {
