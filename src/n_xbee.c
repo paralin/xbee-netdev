@@ -493,7 +493,8 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
   // set the mac address
   if (ndev->dev_addr)
     kfree(ndev->dev_addr);
-  ndev->addr_len = 8;
+
+  ndev->addr_len = ETH_ALEN;
   ndev->dev_addr = kmalloc(ndev->addr_len, GFP_KERNEL);
   ndev->addr_assign_type = NET_ADDR_PERM;
   memcpy(ndev->dev_addr, bridge->xbee_dev->wpan_dev.address.ieee.b, ndev->addr_len);

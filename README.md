@@ -10,6 +10,19 @@ Overview
 
 This driver encapsulates higher level packets into XBEE API frames. It does this by using the xbee api to transmit to specific target devices by mac address.
 
+Quick Start
+==========
+
+Replace 115200 with your baudrate and /dev/ttyUSB0 with your TTY for your device.
+
+```
+make -j4
+sudo insmod ./n_xbee.ko
+sudo ./ldisc_daemon /dev/ttyUSB0 115200
+```
+
+You can watch the logs from this device with `dmesg -w`. You should see a new netdev named `xbeeUSB0`.
+
 Initialization
 ==============
 
@@ -37,11 +50,7 @@ As a result, fragmentation is implemented in the driver. The MTU can be set to a
 Radio Configuration
 ===================
 
-There is some effort to automatically configure the xbee when the line discipline is set, but as of now, you will need to do it manually.
-
-First follow these to set up your device properly: https://github.com/digidotcom/xbee_ansic_library#xbee-firmware
-
-There are a few extra changes required by this driver, and these will be described here soon.
+This device will automatically set your device in API 1 mode with AO enabled. Make sure your device is running a firmware with API mode included!
 
 Fragmentation
 =============
@@ -71,3 +80,18 @@ For receiving:
 For the future:
 
  - Allocating a fragment context could take time, this could be optimized by re-using existing fragmentation contexts (create one for each remote device and only free it after it hasn't been used for some time)
+
+MAC Addresses
+=============
+
+Ethernet protocol only supports `ETH_ALEN`  - 48 bit or 6 byte MAC addresses. XBEE uses 64 bit or 8 byte MAC addresses.
+
+To bridge the gap, this driver sets the netdev address to the first 48 bits of the XBEE MAC address.
+
+When receiving, this works fine, it's a bit of lost data. But when transmitting, you need to know the extra bits.
+
+As a result, this driver keeps a list of all known full MAC addresses. It also transmits a broadcast packet announcing its own presence every second.
+
+Unfortunately there is no promiscuous mode on these devices, thus the broadcast packet announce mechanism.
+
+If you don't want to announce presence, you can set`-DN_XBEE_DISABLE_ANNOUNCE`.
