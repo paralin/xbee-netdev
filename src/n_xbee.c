@@ -167,8 +167,14 @@ void n_xbee_prepare_xmit(struct tty_struct* tty) {
 // Checks the tty to see if there is really an xbee
 // on the other end, and if so, it's communicating right.
 // Also retreives some params about the remote dev
+// FUTURE IMPROVEMENT: Only enter AT mode if API mode fails.
+// REWRITE:
+//   - Attempt to send API frame with AT command to get API mode.
+//   - If it does not return OR returns a mode other than 1, revert to ATMODE
+#define CHECK_RESP_BUF_SIZE 255
 int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
-  int err, mode, iterations;
+  int err, mode, iterations, bytesread;
+  char respbuf[CHECK_RESP_BUF_SIZE];
   xbee_dev_t* xbee = bridge->xbee_dev;
   printk(KERN_INFO "Putting board into AT mode to check values...\n");
   if ((err = xbee_atmode_enter(xbee)) != 0) {
@@ -183,7 +189,36 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
     mode = xbee_atmode_tick(xbee);
 
     if (mode == XBEE_MODE_COMMAND) {
-      printk(KERN_INFO "Successfully entered AT mode...\n");
+      printk(KERN_INFO "%s: Successfully entered AT mode...\n", __FUNCTION__);
+      break;
+    }
+    else if (mode == XBEE_MODE_IDLE) {
+      printk(KERN_ALERT "%s: Never entered AT mode (in idle mode), assuming failure.\n", __FUNCTION__);
+      return -ETIMEDOUT;
+    }
+
+    // sleep 5 milliseconds
+    msleep(5);
+    iterations ++;
+  }
+
+  printk(KERN_INFO "%s: Setting API mode 1...\n", __FUNCTION__);
+  if ((err = xbee_atmode_send_request(xbee, "AP 1")) != 0) {
+    printk(KERN_ALERT "%s: Unable to set API mode, error: %d\n", __FUNCTION__, err);
+    return err;
+  }
+
+  iterations = 0;
+  while (1) {
+    N_XBEE_CHECK_CANCEL;
+    N_XBEE_CHECK_ITERATIONS(iterations, 200);
+    mode = xbee_atmode_read_response(xbee, respbuf, CHECK_RESP_BUF_SIZE, &bytesread);
+    if (mode == 0) {
+      if (bytesread < 2 || respbuf[0] != '1') {
+        printk(KERN_ALERT "%s: Response from ATAP is %c, should be 1, failing.\n", __FUNCTION__, respbuf[0]);
+        return -EIO;
+      }
+      printk(KERN_INFO "%s: Successfully set API mode 1...\n", __FUNCTION__);
       break;
     }
     else if (mode == XBEE_MODE_IDLE) {
@@ -196,12 +231,52 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
     iterations ++;
   }
 
+  // exit AT mode
+  printk(KERN_INFO "%s: Exiting AT mode...\n", __FUNCTION__);
+  if ((err = xbee_atmode_exit(xbee)) != 0) {
+    printk(KERN_ALERT "%s: Unable to exit AT mode, error: %d\n", __FUNCTION__, err);
+    return err;
+  }
+
+  iterations = 0;
+  // we have to wait around 2 seconds here for the xbee driver to exit AT mode
+  while (1) {
+    N_XBEE_CHECK_CANCEL;
+    N_XBEE_CHECK_ITERATIONS(iterations, 410);
+    mode = xbee_atmode_tick(xbee);
+    if (mode == XBEE_MODE_IDLE) {
+      printk(KERN_INFO "%s: Successfully exited AT mode.\n", __FUNCTION__);
+      break;
+    }
+    msleep(5);
+    iterations++;
+  }
+
   // Fire off a bunch of AT commands and set handlers
-  if ((err = xbee_cmd_init_device(xbee)) != 0) {
+  if ((err = xbee_cmd_query_device(xbee, 0)) != 0) {
     printk(KERN_ALERT "%s: Error initing atcmd mode: %d\n", __FUNCTION__, err);
     return err;
   }
 
+  // Wait for the cmd_query_device to finish.
+  iterations = 0;
+  while ((err = xbee_cmd_query_status(xbee)) == -EBUSY) {
+    N_XBEE_CHECK_CANCEL;
+    N_XBEE_CHECK_ITERATIONS(iterations, 400);
+    msleep(5);
+    iterations++;
+  }
+  if (err != 0) {
+    printk(KERN_ALERT "%s: Error waiting for device query: %d\n", __FUNCTION__, err);
+    return err;
+  }
+
+  if ((err = xbee_cmd_init_device(xbee)) != 0) {
+    printk(KERN_ALERT "%s: Error initing device: %d\n", __FUNCTION__, err);
+    return err;
+  }
+
+  /* Additional disabled wait period for init
   iterations = 0;
   while ((err = xbee_cmd_query_status(xbee)) == -EBUSY) {
     N_XBEE_CHECK_CANCEL;
@@ -213,30 +288,10 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
     printk(KERN_ALERT "%s: Error waiting for AT queries: %d\n", __FUNCTION__, err);
     return err;
   }
+  */
 
-  // exit AT mode
-  printk(KERN_INFO "Exiting AT mode...\n");
-  if ((err = xbee_atmode_exit(xbee)) != 0) {
-    printk(KERN_ALERT "%s: Unable to exit AT mode, error: %d\n", __FUNCTION__, err);
-    return err;
-  }
-
-  iterations = 0;
-  // we have to wait around 2 seconds here for the xbee driver to exit AT mode
-  while (1) {
-    N_XBEE_CHECK_CANCEL;
-    N_XBEE_CHECK_ITERATIONS(iterations, 410);
-
-    mode = xbee_atmode_tick(xbee);
-
-    if (mode == XBEE_MODE_IDLE) {
-      printk(KERN_INFO "%s: Successfully exited AT mode.\n", __FUNCTION__);
-      break;
-    }
-
-    msleep(5);
-    iterations++;
-  }
+  // set API mode
+  
 
   return 0;
 }
@@ -663,7 +718,6 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
 #endif
   printk(KERN_INFO "n_xbee_receive_buf from %s with size %d\n", tty->name, count);
 #if defined(XBEE_SERIAL_VERBOSE)
-  printk(KERN_INFO "%s: receive buffer size: %d\n", __FUNCTION__, dbuf->pos);
   {
     anyNonAscii = 0;
     for (i = 0; i < count; i++) {
