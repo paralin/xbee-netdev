@@ -4,8 +4,9 @@
 #include <xbee/atmode.h>
 #include <linux/kthread.h>
 
-// forward declaration
+// forward declarations
 extern struct tty_ldisc_ops n_xbee_ldisc;
+static void n_xbee_flush_buffer(struct tty_struct* tty);
 
 // Module init stuff
 MODULE_LICENSE("GPL");
@@ -27,7 +28,12 @@ MODULE_DESCRIPTION("IP over Xbee.");
 /* == Xbee stuff == */
 // empty disaptch table for now
 const xbee_dispatch_table_entry_t xbee_frame_handlers[] =
-{};
+{
+  XBEE_FRAME_HANDLE_LOCAL_AT,
+  // XBEE_FRAME_HANDLE_RX_EXPLICIT, requires wpan
+  XBEE_FRAME_MODEM_STATUS_DEBUG,
+  XBEE_FRAME_TABLE_END
+};
 
 /* == Buffer stuff == */
 struct xbee_data_buffer* n_xbee_alloc_buffer(int size) {
@@ -167,15 +173,33 @@ void n_xbee_prepare_xmit(struct tty_struct* tty) {
 // Checks the tty to see if there is really an xbee
 // on the other end, and if so, it's communicating right.
 // Also retreives some params about the remote dev
+// THIS IS REALLY MESSY CODE
 // FUTURE IMPROVEMENT: Only enter AT mode if API mode fails.
 // REWRITE:
 //   - Attempt to send API frame with AT command to get API mode.
 //   - If it does not return OR returns a mode other than 1, revert to ATMODE
+#define CHECK_MISC_ATMODE_ERRS \
+    else if (mode == -EPERM) { \
+      printk(KERN_ALERT "%s: [bug] After sending, xbee code isn't waiting for a response.\n", __FUNCTION__); \
+      return -EIO; \
+    } \
+    else if (mode == -ENOSPC) { \
+      printk(KERN_ALERT "%s: [bug] Response from AT cmd was too big, but should only be 1-2 characters.\n", __FUNCTION__); \
+      return -EIO; \
+    } \
+    else if (mode == -ETIMEDOUT) { \
+      printk(KERN_ALERT "%s: Timeout waiting for AT response.\n", __FUNCTION__); \
+      return -ETIMEDOUT; \
+    } else { \
+      printk(KERN_ALERT "%s: Unexpected error returned from xbee_atmode_read_response: %d\n", __FUNCTION__, mode); \
+      return -EIO; \
+    }
 #define CHECK_RESP_BUF_SIZE 255
 int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
   int err, mode, iterations, bytesread;
   char respbuf[CHECK_RESP_BUF_SIZE];
   xbee_dev_t* xbee = bridge->xbee_dev;
+  n_xbee_flush_buffer(bridge->tty);
   printk(KERN_INFO "Putting board into AT mode to check values...\n");
   if ((err = xbee_atmode_enter(xbee)) != 0) {
     printk(KERN_ALERT "Unable to put board into AT mode, error: %d\n", err);
@@ -202,33 +226,124 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
     iterations ++;
   }
 
+  n_xbee_flush_buffer(bridge->tty);
+
   printk(KERN_INFO "%s: Setting API mode 1...\n", __FUNCTION__);
   if ((err = xbee_atmode_send_request(xbee, "AP 1")) != 0) {
     printk(KERN_ALERT "%s: Unable to set API mode, error: %d\n", __FUNCTION__, err);
     return err;
   }
 
+  bytesread = 0;
   iterations = 0;
   while (1) {
     N_XBEE_CHECK_CANCEL;
     N_XBEE_CHECK_ITERATIONS(iterations, 200);
     mode = xbee_atmode_read_response(xbee, respbuf, CHECK_RESP_BUF_SIZE, &bytesread);
-    if (mode == 0) {
-      if (bytesread < 2 || respbuf[0] != '1') {
-        printk(KERN_ALERT "%s: Response from ATAP is %c, should be 1, failing.\n", __FUNCTION__, respbuf[0]);
-        return -EIO;
-      }
-      printk(KERN_INFO "%s: Successfully set API mode 1...\n", __FUNCTION__);
+    if (mode == -EAGAIN) {
+      msleep(5);
+      iterations ++;
+      continue;
+    }
+    else if (mode == 0) {
+      printk(KERN_INFO "%s: Successfully set API mode 1 from %c...\n", __FUNCTION__, respbuf[0]);
       break;
     }
-    else if (mode == XBEE_MODE_IDLE) {
-      printk(KERN_ALERT "Never entered AT mode (in idle mode), assuming failure.\n");
-      return -ETIMEDOUT;
-    }
+    CHECK_MISC_ATMODE_ERRS;
+  }
 
-    // sleep 5 milliseconds
-    msleep(5);
-    iterations ++;
+  msleep(100);
+  N_XBEE_CHECK_CANCEL;
+  n_xbee_flush_buffer(bridge->tty);
+
+  printk(KERN_INFO "%s: Verifying API mode...\n", __FUNCTION__);
+  if ((err = xbee_atmode_send_request(xbee, "AP")) != 0) {
+    printk(KERN_ALERT "%s: Unable to request API mode, error: %d\n", __FUNCTION__, err);
+    return err;
+  }
+
+  bytesread = 0;
+  iterations = 0;
+  while (1) {
+    N_XBEE_CHECK_CANCEL;
+    N_XBEE_CHECK_ITERATIONS(iterations, 200);
+    mode = xbee_atmode_read_response(xbee, respbuf, CHECK_RESP_BUF_SIZE, &bytesread);
+    if (mode == -EAGAIN) {
+      msleep(5);
+      iterations ++;
+      continue;
+    }
+    else if (mode == 0) {
+      if (respbuf[0] != '1' && respbuf[1] != '1' && respbuf[2] != '1') {
+        if (respbuf[0] > 0 && respbuf[0] < 200)
+          printk(KERN_ALERT "%s: Response from AT is %c, should be 1, failing.\n", __FUNCTION__, respbuf[0]);
+        else
+          printk(KERN_ALERT "%s: Response from AT is NOT ASCII - (%d), should be 1 (%d), failing.\n", __FUNCTION__, (int)respbuf[0], (int)'1');
+        return -EIO;
+      }
+      printk(KERN_INFO "%s: Successfully verified API mode 1...\n", __FUNCTION__);
+      break;
+    }
+    CHECK_MISC_ATMODE_ERRS;
+  }
+
+  printk(KERN_INFO "%s: Setting AO mode 1...\n", __FUNCTION__);
+  if ((err = xbee_atmode_send_request(xbee, "AO 1")) != 0) {
+    printk(KERN_ALERT "%s: Unable to set API mode, error: %d\n", __FUNCTION__, err);
+    return err;
+  }
+
+  bytesread = 0;
+  iterations = 0;
+  while (1) {
+    N_XBEE_CHECK_CANCEL;
+    N_XBEE_CHECK_ITERATIONS(iterations, 200);
+    mode = xbee_atmode_read_response(xbee, respbuf, CHECK_RESP_BUF_SIZE, &bytesread);
+    if (mode == -EAGAIN) {
+      msleep(5);
+      iterations ++;
+      continue;
+    }
+    else if (mode == 0) {
+      printk(KERN_INFO "%s: Successfully set AO mode 1 from %c...\n", __FUNCTION__, respbuf[0]);
+      break;
+    }
+    CHECK_MISC_ATMODE_ERRS;
+  }
+
+  msleep(100);
+  N_XBEE_CHECK_CANCEL;
+  n_xbee_flush_buffer(bridge->tty);
+
+  printk(KERN_INFO "%s: Verifying AO mode...\n", __FUNCTION__);
+  if ((err = xbee_atmode_send_request(xbee, "AO")) != 0) {
+    printk(KERN_ALERT "%s: Unable to request AO mode, error: %d\n", __FUNCTION__, err);
+    return err;
+  }
+
+  bytesread = 0;
+  iterations = 0;
+  while (1) {
+    N_XBEE_CHECK_CANCEL;
+    N_XBEE_CHECK_ITERATIONS(iterations, 200);
+    mode = xbee_atmode_read_response(xbee, respbuf, CHECK_RESP_BUF_SIZE, &bytesread);
+    if (mode == -EAGAIN) {
+      msleep(5);
+      iterations ++;
+      continue;
+    }
+    else if (mode == 0) {
+      if (respbuf[0] != '1' && respbuf[1] != '1' && respbuf[2] != '1') {
+        if (respbuf[0] > 0 && respbuf[0] < 200)
+          printk(KERN_ALERT "%s: Response from AT is %c, should be 1, failing.\n", __FUNCTION__, respbuf[0]);
+        else
+          printk(KERN_ALERT "%s: Response from AT is NOT ASCII - (%d), should be 1 (%d), failing.\n", __FUNCTION__, (int)respbuf[0], (int)'1');
+        return -EIO;
+      }
+      printk(KERN_INFO "%s: Successfully verified AO mode 1...\n", __FUNCTION__);
+      break;
+    }
+    CHECK_MISC_ATMODE_ERRS;
   }
 
   // exit AT mode
@@ -252,46 +367,30 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
     iterations++;
   }
 
-  // Fire off a bunch of AT commands and set handlers
-  if ((err = xbee_cmd_query_device(xbee, 0)) != 0) {
-    printk(KERN_ALERT "%s: Error initing atcmd mode: %d\n", __FUNCTION__, err);
-    return err;
-  }
-
-  // Wait for the cmd_query_device to finish.
-  iterations = 0;
-  while ((err = xbee_cmd_query_status(xbee)) == -EBUSY) {
-    N_XBEE_CHECK_CANCEL;
-    N_XBEE_CHECK_ITERATIONS(iterations, 400);
-    msleep(5);
-    iterations++;
-  }
-  if (err != 0) {
-    printk(KERN_ALERT "%s: Error waiting for device query: %d\n", __FUNCTION__, err);
-    return err;
-  }
+  N_XBEE_CHECK_CANCEL;
+  // TODO this timeout can be reduced
+  msleep(1000);
+  N_XBEE_CHECK_CANCEL;
+  n_xbee_flush_buffer(bridge->tty);
 
   if ((err = xbee_cmd_init_device(xbee)) != 0) {
     printk(KERN_ALERT "%s: Error initing device: %d\n", __FUNCTION__, err);
     return err;
   }
 
-  /* Additional disabled wait period for init
+  // Wait for the cmd_query_device to finish.
   iterations = 0;
-  while ((err = xbee_cmd_query_status(xbee)) == -EBUSY) {
+  do {
     N_XBEE_CHECK_CANCEL;
-    N_XBEE_CHECK_ITERATIONS(iterations, 300);
+    N_XBEE_CHECK_ITERATIONS(iterations, 400);
     msleep(5);
     iterations++;
-  }
+    xbee_dev_tick(xbee);
+  } while ((err = xbee_cmd_query_status(xbee)) == -EBUSY);
   if (err != 0) {
-    printk(KERN_ALERT "%s: Error waiting for AT queries: %d\n", __FUNCTION__, err);
+    printk(KERN_ALERT "%s: Error waiting for device query: %d\n", __FUNCTION__, err);
     return err;
   }
-  */
-
-  // set API mode
-  
 
   return 0;
 }
@@ -547,7 +646,6 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   strcpy(bridge->netdevName, XBEE_NETDEV_PREFIX);
   strcpy(bridge->netdevName + strlen(XBEE_NETDEV_PREFIX), rttyname);
 
-
   // verify the xbee exists and load its information
   // NOTE: moved, we cannot do this here. let's init the netdev elsewhere too.
   // instead, let's register a pending dev
@@ -623,12 +721,13 @@ static ssize_t n_xbee_read(struct tty_struct* tty, struct file* file, unsigned c
 
   // nleft = amount of bytes left in the buffer
   nleft = bridge->recvbuf->pos - ntread;
+  // printk(KERN_INFO "%s: there will be %d left in buff after read of %d\n", __FUNCTION__, nleft, ntread);
   if (nleft <= 0)
     bridge->recvbuf->pos = 0;
   else {
-    //index of first byte we need to store is pos
+    //index of first byte we need to store is nread.
     for (i = 0; i < nleft; i++)
-      bridge->recvbuf->buffer[i] = bridge->recvbuf->buffer[i + bridge->recvbuf->pos];
+      bridge->recvbuf->buffer[i] = bridge->recvbuf->buffer[i + ntread];
     bridge->recvbuf->pos = nleft;
   }
 
@@ -641,7 +740,7 @@ static ssize_t n_xbee_write(struct tty_struct* tty, struct file* file, const uns
   int result;
 
 #if defined(N_XBEE_VERBOSE) && defined(XBEE_SERIAL_VERBOSE)
-  int anyNonAscii, i;
+  int i;
 #endif
 
   ENSURE_MODULE;
@@ -658,15 +757,14 @@ static ssize_t n_xbee_write(struct tty_struct* tty, struct file* file, const uns
   printk(KERN_INFO "%s: to %s, size %d, written %d\n", __FUNCTION__, tty->name, (int)nr, result);
 #if defined(XBEE_SERIAL_VERBOSE)
   {
-    anyNonAscii = 0;
+    printk(KERN_INFO "%s: send [", __FUNCTION__);
     for (i = 0; i < nr; i++) {
-      if (buf[i] > 255) {
-        anyNonAscii = 1;
-        break;
-      }
+      if (buf[i] < 33 || buf[i] > 126)
+        printk("(0x%x)", (int)buf[i]);
+      else
+        printk("(%c, 0x%x)", (char)buf[i], (int)buf[i]);
     }
-    if (!anyNonAscii)
-      printk(KERN_INFO "%s: ascii output: %.*s\n", __FUNCTION__, (int)nr, buf);
+    printk("]\n");
   }
 #endif
 #endif
@@ -714,22 +812,9 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
 
 #ifdef N_XBEE_VERBOSE
 #ifdef XBEE_SERIAL_VERBOSE
-  int anyNonAscii, i;
+  int i;
 #endif
-  printk(KERN_INFO "n_xbee_receive_buf from %s with size %d\n", tty->name, count);
-#if defined(XBEE_SERIAL_VERBOSE)
-  {
-    anyNonAscii = 0;
-    for (i = 0; i < count; i++) {
-      if (cp[i] > 255) {
-        anyNonAscii = 1;
-        break;
-      }
-    }
-    if (!anyNonAscii)
-      printk(KERN_INFO "%s: ascii input: %.*s\n", __FUNCTION__, (int)count, cp);
-  }
-#endif
+  printk(KERN_INFO "%s: from %s with size %d\n", __FUNCTION__, tty->name, count);
 #endif
 
   ENSURE_MODULE_NORET;
@@ -756,7 +841,16 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
   dbuf->pos += count;
 
 #if defined(N_XBEE_VERBOSE) && defined(XBEE_SERIAL_VERBOSE)
-  printk(KERN_INFO "%s: receive buffer size: %d\n", __FUNCTION__, dbuf->pos);
+  printk(KERN_INFO "%s: recv buf (%d): [", __FUNCTION__, dbuf->pos);
+  {
+    for (i = 0; i < dbuf->pos; i++) {
+      if (dbuf->buffer[i] < 33 || dbuf->buffer[i] > 126)
+        printk("(0x%x)", (int)dbuf->buffer[i]);
+      else
+        printk("(%c, 0x%x)", (char)dbuf->buffer[i], (int)dbuf->buffer[i]);
+    }
+    printk("]\n");
+  }
 #endif
   spin_unlock(&bridge->read_lock);
 
