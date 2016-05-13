@@ -367,9 +367,7 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
     iterations++;
   }
 
-  N_XBEE_CHECK_CANCEL;
-  // TODO this timeout can be reduced
-  msleep(1000);
+  msleep(50);
   N_XBEE_CHECK_CANCEL;
   n_xbee_flush_buffer(bridge->tty);
 
@@ -491,6 +489,14 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
   priv = netdev_priv(ndev);
   memset(priv, 0, sizeof(*priv));
   priv->bridge = bridge;
+
+  // set the mac address
+  if (ndev->dev_addr)
+    kfree(ndev->dev_addr);
+  ndev->addr_len = 8;
+  ndev->dev_addr = kmalloc(ndev->addr_len, GFP_KERNEL);
+  ndev->addr_assign_type = NET_ADDR_PERM;
+  memcpy(ndev->dev_addr, bridge->xbee_dev->wpan_dev.address.ieee.b, ndev->addr_len);
 
   if ((err = register_netdev(ndev)) != 0) {
     printk(KERN_ALERT "%s: Failed to register netdev %s with error %i...", __FUNCTION__, bridge->netdevName, err);

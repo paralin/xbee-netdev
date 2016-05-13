@@ -15,7 +15,11 @@ _XBEE_NET_FILES := \
 	src/n_xbee.o
 
 EXTRA_CFLAGS += -I$(PWD)/thirdparty/xbee_ansic_library/include
-EXTRA_CFLAGS += -DXBEE_ATMODE_VERBOSE -DXBEE_DEVICE_ENABLE_ATMODE
+
+# These will enabel verbosity in various parts.
+EXTRA_CFLAGS += -DXBEE_ATMODE_VERBOSE
+EXTRA_CFLAGS += -DXBEE_ATCMD_VERBOSE
+EXTRA_CFLAGS += -DXBEE_DEVICE_ENABLE_ATMODE
 
 # If you enable this you will get a LOT of debugging output
 # EXTRA_CFLAGS += -DXBEE_SERIAL_VERBOSE
