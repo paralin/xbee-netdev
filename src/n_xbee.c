@@ -906,8 +906,10 @@ static int __init n_xbee_init(void) {
 
 static void __exit n_xbee_cleanup(void) {
   printk(KERN_INFO "%s: xbee-net shutting down...\n", __FUNCTION__);
+  // Only unregister if there are NO open ttys on this ldisc.
+  if (!n_xbee_serial_bridges)
+    tty_unregister_ldisc(N_XBEE_LISC);
   n_xbee_free_all_bridges();
-  tty_unregister_ldisc(N_XBEE_LISC);
 }
 
 module_init(n_xbee_init);
