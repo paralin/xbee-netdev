@@ -81,6 +81,9 @@ void n_xbee_free_bridge(xbee_serial_bridge* n) {
     n->pend_dev->cancel = 1;
     n->pend_dev->noFreeBridge = 1;
   }
+  if (n->tick_state) {
+    n->tick_state->should_exit = 1;
+  }
   kfree(n);
 }
 
@@ -88,11 +91,12 @@ void n_xbee_free_bridge(xbee_serial_bridge* n) {
 // according to Linus Torvalds this code has bad taste
 // should fix it eventually ;)
 void n_xbee_insert_bridge(xbee_serial_bridge* n) {
+  xbee_serial_bridge* nc;
   if (!n_xbee_serial_bridges)
     n_xbee_serial_bridges = n;
   else {
     spin_lock(&n_xbee_serial_bridges_l);
-    xbee_serial_bridge* nc = n_xbee_serial_bridges;
+    nc = n_xbee_serial_bridges;
     while (nc->next)
       nc = nc->next;
     nc->next = n;
@@ -102,15 +106,16 @@ void n_xbee_insert_bridge(xbee_serial_bridge* n) {
 
 // Remove a bridge from the list of bridges. Does not free.
 void n_xbee_remove_bridge(xbee_serial_bridge* ntd) {
-  spin_lock(&n_xbee_serial_bridges_l);
   xbee_serial_bridge* n = n_xbee_serial_bridges;
   xbee_serial_bridge* nl = NULL;
+  spin_lock(&n_xbee_serial_bridges_l);
   while (n) {
     if (n == ntd) {
       if (!nl)
         n_xbee_serial_bridges = n->next;
       else
         nl->next = n->next;
+      spin_unlock(&n_xbee_serial_bridges_l);
       return;
     }
     nl = n;
@@ -121,8 +126,8 @@ void n_xbee_remove_bridge(xbee_serial_bridge* ntd) {
 
 // Free all bridges
 void n_xbee_free_all_bridges(void) {
-  spin_lock(&n_xbee_serial_bridges_l);
   xbee_serial_bridge* n = n_xbee_serial_bridges;
+  spin_lock(&n_xbee_serial_bridges_l);
   n_xbee_serial_bridges = NULL;
   spin_unlock(&n_xbee_serial_bridges_l);
   while (n) {
@@ -134,8 +139,8 @@ void n_xbee_free_all_bridges(void) {
 
 // Find by name
 xbee_serial_bridge* n_xbee_find_bridge_byname(const char* name) {
-  spin_lock(&n_xbee_serial_bridges_l);
   xbee_serial_bridge* n = n_xbee_serial_bridges;
+  spin_lock(&n_xbee_serial_bridges_l);
   while (n) {
     if (strcmp(n->name, name) == 0) {
       spin_unlock(&n_xbee_serial_bridges_l);
@@ -149,10 +154,25 @@ xbee_serial_bridge* n_xbee_find_bridge_byname(const char* name) {
 
 // Find by tty
 xbee_serial_bridge* n_xbee_find_bridge_bytty(struct tty_struct* tty) {
-  spin_lock(&n_xbee_serial_bridges_l);
   xbee_serial_bridge* n = n_xbee_serial_bridges;
+  spin_lock(&n_xbee_serial_bridges_l);
   while (n) {
     if (n->tty == tty) {
+      spin_unlock(&n_xbee_serial_bridges_l);
+      return n;
+    }
+    n = n->next;
+  }
+  spin_unlock(&n_xbee_serial_bridges_l);
+  return NULL;
+}
+
+// Find by netdev
+xbee_serial_bridge* n_xbee_find_bridge_byndev(struct net_device* ndev) {
+  xbee_serial_bridge* n = n_xbee_serial_bridges;
+  spin_lock(&n_xbee_serial_bridges_l);
+  while (n) {
+    if (n->netdev == ndev) {
       spin_unlock(&n_xbee_serial_bridges_l);
       return n;
     }
@@ -404,6 +424,21 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
   return 0;
 }
 
+int n_xbee_serial_tick_thread(void* data);
+int n_xbee_init_tickthread(xbee_serial_bridge* bridge) {
+  xbee_tick_threadstate* st;
+  if (!bridge || bridge->tick_state)
+    return 0;
+  st = bridge->tick_state = (xbee_tick_threadstate*) kmalloc(sizeof(xbee_tick_threadstate), GFP_KERNEL);
+  if (!st)
+    return -ENOMEM;
+  spin_lock_init(&st->tick_lock);
+  st->should_exit = 0;
+  st->bridge = bridge;
+  kthread_run(n_xbee_serial_tick_thread, (void*)st, "xbee_tickthread");
+  return 0;
+}
+
 /* = XBEE NetDev = */
 static int n_xbee_netdev_open(struct net_device* dev) {
   printk(KERN_INFO "%s: Kernel is opening %s...\n", __FUNCTION__, dev->name);
@@ -418,7 +453,14 @@ static int n_xbee_netdev_release(struct net_device* dev) {
   return 0;
 }
 
-static struct net_device_stats* n_xbee_netdev_stats(struct net_device* dev) 
+static struct net_device_stats* n_xbee_netdev_stats(struct net_device* dev) {
+  struct xbee_netdev_priv* priv;
+  ENSURE_MODULE_RET(NULL);
+  priv = netdev_priv(dev);
+  if (!priv)
+    return NULL;
+  return &priv->stats;
+}
 
 static int n_xbee_netdev_init_late(struct net_device* dev) {
   // Initialize the fragmentation system
@@ -471,17 +513,19 @@ static const struct net_device_ops n_xbee_netdev_ops = {
   .ndo_open = n_xbee_netdev_open,
   .ndo_stop = n_xbee_netdev_release,
   .ndo_change_mtu = n_xbee_netdev_change_mtu,
-  .ndo_do_ioctl = n_xbee_netdev_ioctl
+  .ndo_do_ioctl = n_xbee_netdev_ioctl,
+  .ndo_get_stats = n_xbee_netdev_stats
 };
 
 static void n_xbee_netdev_init_early(struct net_device* dev) {
-  // struct xbee_netdev_priv* priv = netdev_priv(dev);
+  struct xbee_netdev_priv* priv = netdev_priv(dev);
 
   ether_setup(dev);
   dev->netdev_ops = &n_xbee_netdev_ops;
   // dev->flags |= IFF_NOARP;
   dev->mtu    = N_XBEE_DATA_MTU;
   // set priv flags and features and mtu
+  memset(priv, 0, sizeof(*priv));
 }
 
 int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
@@ -503,7 +547,6 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
 
   bridge->netdevInitialized = 1;
   priv = netdev_priv(ndev);
-  memset(priv, 0, sizeof(*priv));
   priv->bridge = bridge;
 
   // set the mac address
@@ -544,9 +587,16 @@ void n_xbee_free_netdev(xbee_serial_bridge* n) {
   n->netdev = NULL;
 }
 
-// Check the size of the read buffer
-// When a full frame is received, pass the frame to the TCP headers.
+// ticks the xbee
+// since we register all the callbacks in the xbee code
+// we can just call tick.
 void n_xbee_handle_runtime_frames(xbee_serial_bridge* bridge) {
+  ENSURE_MODULE_NORET;
+  if (!bridge || !bridge->tick_state)
+    return;
+  spin_lock(&bridge->tick_state->tick_lock);
+  xbee_dev_tick(bridge->xbee_dev);
+  spin_unlock(&bridge->tick_state->tick_lock);
 }
 
 /* = XBEE Detection and Setup  =
@@ -588,6 +638,14 @@ int n_xbee_resolve_pending_dev(xbee_pending_dev* dev) {
   if (dev->cancel)
     return -1;
 
+  if (n_xbee_init_tickthread(dev->bridge) != 0) {
+    printk(KERN_ALERT "%s: %s n_xbee_init_tickthread indicated failure, aborting.\n", __FUNCTION__, dev->bridge->tty->name);
+    return -ENODEV;
+  }
+
+  if (dev->cancel)
+    return -1;
+
   if (n_xbee_init_netdev(dev->bridge) != 0) {
     printk(KERN_ALERT "%s: %s n_xbee_init_netdev indicated failure, aborting.\n", __FUNCTION__, dev->bridge->tty->name);
     return -ENODEV;
@@ -605,6 +663,28 @@ int n_xbee_resolve_pending_dev_thread(void* data) {
     }
   }
   kfree(dev);
+  return 0;
+}
+
+// The receive data function will call tick on its own
+// However, there might be some other xbee code internals
+// that would want to query the xbee on a timed basis.
+int n_xbee_serial_tick_thread(void* data) {
+  int ourId;
+  xbee_tick_threadstate* tstate = (xbee_tick_threadstate*) data;
+  if (!data || !tstate || !tstate->bridge || tstate->should_exit)
+    return 0;
+  ourId = ++xbee_tick_thread_counter;
+  printk(KERN_INFO "%s: starting tick thread [%d] for %s\n", __FUNCTION__, ourId, tstate->bridge->name);
+  while (!tstate->should_exit) {
+    spin_lock(&tstate->tick_lock);
+    // do work
+    xbee_dev_tick(tstate->bridge->xbee_dev);
+    spin_unlock(&tstate->tick_lock);
+    msleep(100);
+  }
+  printk(KERN_INFO "%s: exiting tick thread [%d]\n", __FUNCTION__, ourId);
+  kfree(data);
   return 0;
 }
 
@@ -680,6 +760,7 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   bridge->pend_dev->bridge = bridge;
   bridge->pend_dev->cancel = 0;
   bridge->pend_dev->noFreeBridge = 0;
+  bridge->tick_state = 0;
 
   n_xbee_insert_bridge(bridge);
   kthread_run(n_xbee_resolve_pending_dev_thread, (void*)bridge->pend_dev, "xbee_penddev");
@@ -882,14 +963,12 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
   spin_unlock(&bridge->read_lock);
 
   // If we're not pending device setup
-  if (!bridge->pend_dev && bridge->netdevInitialized) {
+  if (!bridge->pend_dev && bridge->netdevInitialized)
     n_xbee_handle_runtime_frames(bridge);
-  }
 }
 
 static void n_xbee_write_wakeup(struct tty_struct* tty) {
   tty->flags &= ~(1 << TTY_DO_WRITE_WAKEUP);
-  //maybe wakeup netdev queue here?
 }
 
 // Line discipline, allows us to assign ownership
@@ -918,6 +997,7 @@ static int __init n_xbee_init(void) {
   printk(KERN_INFO "%s: xbee-net initializing...\n", __FUNCTION__);
 
   n_xbee_init_bridge_ll();
+  xbee_tick_thread_counter = 0;
   result = tty_register_ldisc(N_XBEE_LISC, &n_xbee_ldisc);
   if (result) {
     printk(KERN_ALERT "%s: Registering line discipline failed: %d\n", __FUNCTION__, result);

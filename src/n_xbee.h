@@ -39,6 +39,15 @@ typedef struct xbee_data_buffer {
   int pos;
 } xbee_data_buffer;
 
+struct xbee_serial_bridge;
+// Store state for the tick thread.
+typedef struct xbee_tick_threadstate {
+  int should_exit;
+  struct xbee_serial_bridge* bridge;
+  spinlock_t tick_lock;
+} xbee_tick_threadstate;
+int xbee_tick_thread_counter;
+
 /*
  * One bridge is created per registered xbee.
  */
@@ -55,7 +64,10 @@ typedef struct xbee_serial_bridge {
   spinlock_t write_lock;
   spinlock_t read_lock;
   // during the pending state, this will be set
+  // do NOT free
   struct xbee_pending_dev* pend_dev;
+  // do NOT free
+  struct xbee_tick_threadstate* tick_state;
 } xbee_serial_bridge;
 struct xbee_serial_bridge* n_xbee_serial_bridges;
 spinlock_t n_xbee_serial_bridges_l;
@@ -63,6 +75,7 @@ spinlock_t n_xbee_serial_bridges_l;
 // Private storage for xbee netdev
 typedef struct xbee_netdev_priv {
   xbee_serial_bridge* bridge;
+  struct net_device_stats stats;
 } xbee_netdev_priv;
 
 typedef struct xbee_pending_dev {
