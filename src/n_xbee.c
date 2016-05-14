@@ -390,13 +390,13 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
 /* = XBEE NetDev = */
 static int n_xbee_netdev_open(struct net_device* dev) {
   printk(KERN_INFO "%s: Kernel is opening %s...\n", __FUNCTION__, dev->name);
-  netif_start_queue(dev);
+  // netif_start_queue(dev);
   return 0;
 }
 
 static int n_xbee_netdev_release(struct net_device* dev) {
   printk(KERN_INFO "%s: Kernel is closing %s...\n", __FUNCTION__, dev->name);
-  netif_stop_queue(dev);
+  // netif_stop_queue(dev);
   return 0;
 }
 
@@ -412,7 +412,7 @@ static int n_xbee_netdev_change_mtu(struct net_device* dev, int new_mtu) {
   if (new_mtu == dev->mtu)
     return 0;
   priv = netdev_priv(dev);
-  if (!priv)
+  if (!priv || !priv->bridge)
     return -EINVAL;
 
   printk(KERN_INFO "%s: Changing MTU of %s to %u...\n", __FUNCTION__, dev->name, new_mtu);
