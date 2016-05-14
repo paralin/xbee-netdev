@@ -106,28 +106,32 @@ void n_xbee_insert_bridge(xbee_serial_bridge* n) {
 
 // Remove a bridge from the list of bridges. Does not free.
 void n_xbee_remove_bridge(xbee_serial_bridge* ntd) {
-  xbee_serial_bridge* n = n_xbee_serial_bridges;
-  xbee_serial_bridge* nl = NULL;
+  xbee_serial_bridge* n;
+  xbee_serial_bridge* n_last;
   spin_lock(&n_xbee_serial_bridges_l);
+  n = n_xbee_serial_bridges;
+  n_last = NULL;
   while (n) {
     if (n == ntd) {
-      if (!nl)
+      if (!n_last)
         n_xbee_serial_bridges = n->next;
       else
-        nl->next = n->next;
+        n_last->next = n->next;
       spin_unlock(&n_xbee_serial_bridges_l);
       return;
     }
-    nl = n;
+    n_last = n;
     n = n->next;
   }
+  printk(KERN_ALERT "%s: BUG: couldn't find bridge %p in list.\n", __FUNCTION__, ntd);
   spin_unlock(&n_xbee_serial_bridges_l);
 }
 
 // Free all bridges
 void n_xbee_free_all_bridges(void) {
-  xbee_serial_bridge* n = n_xbee_serial_bridges;
+  xbee_serial_bridge* n;
   spin_lock(&n_xbee_serial_bridges_l);
+  n = n_xbee_serial_bridges;
   n_xbee_serial_bridges = NULL;
   spin_unlock(&n_xbee_serial_bridges_l);
   while (n) {
@@ -154,8 +158,9 @@ xbee_serial_bridge* n_xbee_find_bridge_byname(const char* name) {
 
 // Find by tty
 xbee_serial_bridge* n_xbee_find_bridge_bytty(struct tty_struct* tty) {
-  xbee_serial_bridge* n = n_xbee_serial_bridges;
+  xbee_serial_bridge* n;
   spin_lock(&n_xbee_serial_bridges_l);
+  n = n_xbee_serial_bridges;
   while (n) {
     if (n->tty == tty) {
       spin_unlock(&n_xbee_serial_bridges_l);
@@ -881,8 +886,9 @@ static ssize_t n_xbee_write(struct tty_struct* tty, struct file* file, const uns
 }
 
 static int n_xbee_serial_ioctl_chars_in_buffer(struct tty_struct* tty, struct file* file, unsigned int cmd, unsigned long arg) {
-  int cpres;
-  int blen = (int) n_xbee_chars_in_buffer(tty);
+  int cpres, blen;
+  ENSURE_MODULE_RET(0);
+  blen = (int) n_xbee_chars_in_buffer(tty);
   if (blen < 0)
     return blen;
   if (arg) {
