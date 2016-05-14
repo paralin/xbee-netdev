@@ -58,6 +58,7 @@ typedef struct xbee_serial_bridge {
   struct xbee_pending_dev* pend_dev;
 } xbee_serial_bridge;
 struct xbee_serial_bridge* n_xbee_serial_bridges;
+spinlock_t n_xbee_serial_bridges_l;
 
 // Private storage for xbee netdev
 typedef struct xbee_netdev_priv {

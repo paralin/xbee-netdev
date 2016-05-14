@@ -53,6 +53,7 @@ void n_xbee_free_buffer(struct xbee_data_buffer* buf) {
 /* = Serial Bridge Stuff = */
 void n_xbee_init_bridge_ll(void) {
   n_xbee_serial_bridges = NULL;
+  spin_lock_init(&n_xbee_serial_bridges_l);
 }
 
 // Frees the xbee_dev_t
@@ -84,19 +85,24 @@ void n_xbee_free_bridge(xbee_serial_bridge* n) {
 }
 
 // Insert a bridge into the linked list
+// according to Linus Torvalds this code has bad taste
+// should fix it eventually ;)
 void n_xbee_insert_bridge(xbee_serial_bridge* n) {
   if (!n_xbee_serial_bridges)
     n_xbee_serial_bridges = n;
   else {
+    spin_lock(&n_xbee_serial_bridges_l);
     xbee_serial_bridge* nc = n_xbee_serial_bridges;
     while (nc->next)
       nc = nc->next;
     nc->next = n;
+    spin_unlock(&n_xbee_serial_bridges_l);
   }
 }
 
 // Remove a bridge from the list of bridges. Does not free.
 void n_xbee_remove_bridge(xbee_serial_bridge* ntd) {
+  spin_lock(&n_xbee_serial_bridges_l);
   xbee_serial_bridge* n = n_xbee_serial_bridges;
   xbee_serial_bridge* nl = NULL;
   while (n) {
@@ -110,12 +116,15 @@ void n_xbee_remove_bridge(xbee_serial_bridge* ntd) {
     nl = n;
     n = n->next;
   }
+  spin_unlock(&n_xbee_serial_bridges_l);
 }
 
 // Free all bridges
 void n_xbee_free_all_bridges(void) {
+  spin_lock(&n_xbee_serial_bridges_l);
   xbee_serial_bridge* n = n_xbee_serial_bridges;
   n_xbee_serial_bridges = NULL;
+  spin_unlock(&n_xbee_serial_bridges_l);
   while (n) {
     xbee_serial_bridge* ni = n;
     n = n->next;
@@ -125,23 +134,31 @@ void n_xbee_free_all_bridges(void) {
 
 // Find by name
 xbee_serial_bridge* n_xbee_find_bridge_byname(const char* name) {
+  spin_lock(&n_xbee_serial_bridges_l);
   xbee_serial_bridge* n = n_xbee_serial_bridges;
   while (n) {
-    if (strcmp(n->name, name) == 0)
+    if (strcmp(n->name, name) == 0) {
+      spin_unlock(&n_xbee_serial_bridges_l);
       return n;
+    }
     n = n->next;
   }
+  spin_unlock(&n_xbee_serial_bridges_l);
   return NULL;
 }
 
 // Find by tty
 xbee_serial_bridge* n_xbee_find_bridge_bytty(struct tty_struct* tty) {
+  spin_lock(&n_xbee_serial_bridges_l);
   xbee_serial_bridge* n = n_xbee_serial_bridges;
   while (n) {
-    if (n->tty == tty)
+    if (n->tty == tty) {
+      spin_unlock(&n_xbee_serial_bridges_l);
       return n;
+    }
     n = n->next;
   }
+  spin_unlock(&n_xbee_serial_bridges_l);
   return NULL;
 }
 
@@ -390,8 +407,9 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
 /* = XBEE NetDev = */
 static int n_xbee_netdev_open(struct net_device* dev) {
   printk(KERN_INFO "%s: Kernel is opening %s...\n", __FUNCTION__, dev->name);
+  return -ENOSYS;
   // netif_start_queue(dev);
-  return 0;
+  // return 0;
 }
 
 static int n_xbee_netdev_release(struct net_device* dev) {
@@ -399,6 +417,8 @@ static int n_xbee_netdev_release(struct net_device* dev) {
   // netif_stop_queue(dev);
   return 0;
 }
+
+static struct net_device_stats* n_xbee_netdev_stats(struct net_device* dev) 
 
 static int n_xbee_netdev_init_late(struct net_device* dev) {
   // Initialize the fragmentation system
@@ -897,6 +917,7 @@ static int __init n_xbee_init(void) {
   int result;
   printk(KERN_INFO "%s: xbee-net initializing...\n", __FUNCTION__);
 
+  n_xbee_init_bridge_ll();
   result = tty_register_ldisc(N_XBEE_LISC, &n_xbee_ldisc);
   if (result) {
     printk(KERN_ALERT "%s: Registering line discipline failed: %d\n", __FUNCTION__, result);
