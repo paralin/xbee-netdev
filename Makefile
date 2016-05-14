@@ -31,14 +31,14 @@ obj-m += n_xbee.o
 n_xbee-objs += $(_XBEE_NET_FILES)
 
 default: driver daemon
-clean:
-	-git clean -Xfd && cd ./thirdparty/xbee_ansic_library/ && git clean -Xfd
-	#-rm -f Module.symvers modules.order
-	#-find . -type f -name '*.o' -delete
-	#-find . -type f -name '*.ko' -delete
-	#-find . -type f -name '*.mod.c' -delete
-driver:
+ensure-submodule:
+	@if [ ! -f ./thirdparty/xbee_ansic_library/README.md ]; then \
+		echo "Attempting to update submodule..." && \
+		git submodule update --init \
+		;fi
+driver: ensure-submodule
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
-
 daemon:
 	$(CC) -o ldisc_daemon ./src/ldisc_daemon.c
+clean:
+	-git clean -Xfd && cd ./thirdparty/xbee_ansic_library/ && git clean -Xfd
