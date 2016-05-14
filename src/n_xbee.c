@@ -65,9 +65,6 @@ void n_xbee_free_xbee_dev(xbee_dev_t* dev) {
 void n_xbee_free_netdev(xbee_serial_bridge* n);
 void n_xbee_free_bridge(xbee_serial_bridge* n) {
   if (!n) return;
-  // grab read and write locks
-  spin_lock(&n->read_lock);
-  spin_lock(&n->write_lock);
   if (n->netdevInitialized)
     n_xbee_free_netdev(n);
   if (n->name)
@@ -83,9 +80,6 @@ void n_xbee_free_bridge(xbee_serial_bridge* n) {
     n->pend_dev->cancel = 1;
     n->pend_dev->noFreeBridge = 1;
   }
-  // maybe unnecessary, do it anyway
-  spin_unlock(&n->read_lock);
-  spin_unlock(&n->write_lock);
   kfree(n);
 }
 
@@ -491,8 +485,12 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
   priv->bridge = bridge;
 
   // set the mac address
-  if (ndev->dev_addr)
+  if (ndev->dev_addr) {
+#ifdef N_XBEE_VERBOSE
+    printk(KERN_INFO "%s: re-allocating dev_addr\n", __FUNCTION__);
+#endif
     kfree(ndev->dev_addr);
+  }
 
   ndev->addr_len = ETH_ALEN;
   ndev->dev_addr = kmalloc(ndev->addr_len, GFP_KERNEL);
