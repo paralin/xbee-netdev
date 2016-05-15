@@ -719,14 +719,15 @@ int n_xbee_resolve_pending_dev_thread(void* data) {
 }
 
 void n_xbee_node_discovered(xbee_dev_t* xbee, const xbee_node_id_t *rec) {
-
+  char addr64_buf[ADDR64_STRING_LENGTH];
+  printk(KERN_INFO "%s: Discovered remote node %s.\n", __FUNCTION__, addr64_format(addr64_buf, &xbee->wpan_dev.address.ieee));
 }
 
 // The receive data function will call tick on its own
 // However, there might be some other xbee code internals
 // that would want to query the xbee on a timed basis.
 int n_xbee_serial_tick_thread(void* data) {
-  int ourId;
+  int ourId, iterSinceDiscover;
   xbee_tick_threadstate* tstate = (xbee_tick_threadstate*) data;
   if (!data || !tstate || !tstate->bridge || tstate->should_exit)
     return 0;
@@ -737,7 +738,12 @@ int n_xbee_serial_tick_thread(void* data) {
     // do work
     xbee_dev_tick(tstate->bridge->xbee_dev);
     spin_unlock(&tstate->tick_lock);
-    msleep(100);
+    if (iterSinceDiscover > (int)(N_XBEE_DISCOVER_INTERVAL / N_XBEE_TICK_INTERVAL)) {
+      iterSinceDiscover = 0;
+      xbee_disc_discover_nodes(tstate->bridge->xbee_dev, NULL);
+    }
+    msleep(N_XBEE_TICK_INTERVAL);
+    iterSinceDiscover++;
   }
   printk(KERN_INFO "%s: exiting tick thread [%d]\n", __FUNCTION__, ourId);
   kfree(data);
