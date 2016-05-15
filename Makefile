@@ -9,6 +9,11 @@ _XBEE_NET_FILES := \
 	$(_XBEE_SRC_DIR)/xbee/xbee_atmode.o \
 	$(_XBEE_SRC_DIR)/xbee/xbee_atcmd.o \
 	$(_XBEE_SRC_DIR)/xbee/xbee_device.o \
+	$(_XBEE_SRC_DIR)/xbee/xbee_wpan.o \
+	$(_XBEE_SRC_DIR)/wpan/wpan_aps.o \
+	$(_XBEE_SRC_DIR)/xbee/xbee_discovery.o \
+	$(_XBEE_SRC_DIR)/zigbee/zigbee_zcl.o \
+	$(_XBEE_SRC_DIR)/zigbee/zcl_types.o \
 	$(_XBEE_SRC_DIR)/util/swapbytes.o \
 	$(_XBEE_SRC_DIR)/util/hexstrtobyte.o \
 	$(_XBEE_SRC_DIR)/wpan/wpan_types.o \
@@ -19,12 +24,16 @@ EXTRA_CFLAGS += -I$(PWD)/thirdparty/xbee_ansic_library/include
 # These will enabel verbosity in various parts.
 EXTRA_CFLAGS += -DXBEE_ATMODE_VERBOSE
 EXTRA_CFLAGS += -DXBEE_ATCMD_VERBOSE
+
+# this is required
 EXTRA_CFLAGS += -DXBEE_DEVICE_ENABLE_ATMODE
 
 # If you enable this you will get a LOT of debugging output
 # EXTRA_CFLAGS += -DXBEE_SERIAL_VERBOSE
 # EXTRA_CFLAGS += -DXBEE_DEVICE_VERBOSE
+EXTRA_CFLAGS += -DWPAN_APS_VERBOSE
 
+# Enabel verbsity of this module
 EXTRA_CFLAGS += -DN_XBEE_VERBOSE
 
 obj-m += n_xbee.o

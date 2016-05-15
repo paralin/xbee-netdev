@@ -90,8 +90,4 @@ To bridge the gap, this driver sets the netdev address to the first 48 bits of t
 
 When receiving, this works fine, it's a bit of lost data. But when transmitting, you need to know the extra bits.
 
-As a result, this driver keeps a list of all known full MAC addresses. It also transmits a broadcast packet announcing its own presence every second.
-
-Unfortunately there is no promiscuous mode on these devices, thus the broadcast packet announce mechanism.
-
-If you don't want to announce presence, you can set`-DN_XBEE_DISABLE_ANNOUNCE`.
+This driver uses the XBEE WPAN discovery mechanism to discover peers. It keeps a table of remote peers and remote peer information. It then uses this table to translate 48 bit MAC addresses into full 64 bit XBEE addresses.

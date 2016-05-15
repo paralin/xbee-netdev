@@ -2,6 +2,8 @@
 #include <xbee/device.h>
 #include <xbee/atcmd.h>
 #include <xbee/atmode.h>
+#include <xbee/wpan.h>
+#include <xbee/discovery.h>
 #include <linux/kthread.h>
 
 // forward declarations
@@ -26,13 +28,44 @@ MODULE_DESCRIPTION("IP over Xbee.");
     return RET;
 
 /* == Xbee stuff == */
-// empty disaptch table for now
 const xbee_dispatch_table_entry_t xbee_frame_handlers[] =
 {
+  // handle AT frames
   XBEE_FRAME_HANDLE_LOCAL_AT,
-  // XBEE_FRAME_HANDLE_RX_EXPLICIT, requires wpan
+  XBEE_FRAME_HANDLE_ATND_RESPONSE,
+  // handle receiving a frame
+  XBEE_FRAME_HANDLE_RX_EXPLICIT,
+  XBEE_FRAME_HANDLE_AO0_NODEID,
+  // print modem statuses
   XBEE_FRAME_MODEM_STATUS_DEBUG,
+  // marker for the end
   XBEE_FRAME_TABLE_END
+};
+
+wpan_ep_state_t zdo_ep_state = { 0 };
+wpan_ep_state_t zcl_ep_state = { 0 };
+
+int n_xbee_netdev_rx(const wpan_envelope_t FAR *envelope, void FAR* context);
+const wpan_cluster_table_entry_t xbee_data_clusters[] = {
+  { N_XBEE_CLUSTER_ID, n_xbee_netdev_rx, NULL, WPAN_CLUST_FLAG_INOUT | WPAN_CLUST_FLAG_NOT_ZCL },
+  // if we don't set ATAO to 0...
+  XBEE_DISC_DIGI_DATA_CLUSTER_ENTRY,
+  WPAN_CLUST_ENTRY_LIST_END
+};
+
+const wpan_endpoint_table_entry_t xbee_endpoints[] = {
+  // ZDO_ENDPOINT(zdo_ep_state),
+
+  { N_XBEE_ENDPOINT,
+    WPAN_PROFILE_DIGI,
+    // ignore general endpoint, instead listen to cluster
+    NULL,
+    NULL,
+    0x0,
+    0x0,
+    xbee_data_clusters
+  },
+  { WPAN_ENDPOINT_END_OF_LIST }
 };
 
 /* == Buffer stuff == */
@@ -231,6 +264,7 @@ void n_xbee_prepare_xmit(struct tty_struct* tty) {
       return -EIO; \
     }
 #define CHECK_RESP_BUF_SIZE 255
+void n_xbee_node_discovered(xbee_dev_t* xbee, const xbee_node_id_t *rec);
 int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
   int err, mode, iterations, bytesread;
   char respbuf[CHECK_RESP_BUF_SIZE];
@@ -407,6 +441,12 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
   N_XBEE_CHECK_CANCEL;
   n_xbee_flush_buffer(bridge->tty);
 
+  // init the wpan layer
+  xbee_wpan_init(xbee, xbee_endpoints);
+
+  // register the discovery handler
+  xbee_disc_add_node_id_handler(xbee, &n_xbee_node_discovered);
+
   if ((err = xbee_cmd_init_device(xbee)) != 0) {
     printk(KERN_ALERT "%s: Error initing device: %d\n", __FUNCTION__, err);
     return err;
@@ -521,6 +561,10 @@ static const struct net_device_ops n_xbee_netdev_ops = {
   .ndo_do_ioctl = n_xbee_netdev_ioctl,
   .ndo_get_stats = n_xbee_netdev_stats
 };
+
+int n_xbee_netdev_rx(const wpan_envelope_t FAR *envelope, void FAR* context) {
+  return 0;
+}
 
 static void n_xbee_netdev_init_early(struct net_device* dev) {
   struct xbee_netdev_priv* priv = netdev_priv(dev);
@@ -669,6 +713,10 @@ int n_xbee_resolve_pending_dev_thread(void* data) {
   }
   kfree(dev);
   return 0;
+}
+
+void n_xbee_node_discovered(xbee_dev_t* xbee, const xbee_node_id_t *rec) {
+
 }
 
 // The receive data function will call tick on its own
@@ -918,7 +966,6 @@ static int n_xbee_serial_ioctl(struct tty_struct* tty, struct file* file, unsign
   return -ENOSYS;
 }
 
-//theoretically here we could get in an infite loop of dropping the entire buffer
 static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, char* fp, int count) {
   struct xbee_serial_bridge* bridge;
   struct xbee_data_buffer* dbuf;

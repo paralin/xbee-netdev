@@ -22,6 +22,11 @@
 #define N_XBEE_DATA_MTU 72
 #define N_XBEE_MAXFRAME (N_XBEE_DATA_MTU*2 + 16)
 
+// endpoint for xbee-netdev
+#define N_XBEE_ENDPOINT 0xE7
+// cluster ID, might want to make this settable down the line
+#define N_XBEE_CLUSTER_ID 54
+
 #define XBEE_NETDEV_PREFIX "xbee"
 
 // Size in bytes of the receive buffer
