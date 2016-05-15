@@ -100,6 +100,8 @@ void n_xbee_free_xbee_dev(xbee_dev_t* dev) {
 void n_xbee_free_netdev(xbee_serial_bridge* n);
 void n_xbee_free_bridge(xbee_serial_bridge* n) {
   if (!n) return;
+  if (n->tty)
+    n->tty->disc_data = NULL;
   if (n->netdevInitialized)
     n_xbee_free_netdev(n);
   if (n->name)
