@@ -62,7 +62,7 @@ int xbee_tick_thread_counter;
 // Discovered remote node
 struct xbee_remote_node;
 typedef struct xbee_remote_node {
-  xbee_node_id_t node_id;
+  addr64 node_addr;
   struct xbee_remote_node* next;
 } xbee_remote_node;
 xbee_remote_node* n_xbee_node_table;
@@ -82,6 +82,7 @@ typedef struct xbee_serial_bridge {
   xbee_dev_t* xbee_dev;
   spinlock_t write_lock;
   spinlock_t read_lock;
+  int netdev_up;
   // during the pending state, this will be set
   // do NOT free
   struct xbee_pending_dev* pend_dev;

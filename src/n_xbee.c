@@ -219,10 +219,30 @@ xbee_serial_bridge* n_xbee_find_bridge_bytty(struct tty_struct* tty) {
 
 // Find by netdev
 xbee_serial_bridge* n_xbee_find_bridge_byndev(struct net_device* ndev) {
+  struct xbee_netdev_priv* priv = netdev_priv(ndev);
+  if (!priv)
+    return NULL;
+  return priv->bridge;
+  /*
   xbee_serial_bridge* n = n_xbee_serial_bridges;
   spin_lock(&n_xbee_serial_bridges_l);
   while (n) {
     if (n->netdev == ndev) {
+      spin_unlock(&n_xbee_serial_bridges_l);
+      return n;
+    }
+    n = n->next;
+  }
+  spin_unlock(&n_xbee_serial_bridges_l);
+  */
+}
+
+// Find by wpan_dev
+xbee_serial_bridge* n_xbee_find_bridge_bywpan(struct wpan_dev_t* wpn) {
+  xbee_serial_bridge* n = n_xbee_serial_bridges;
+  spin_lock(&n_xbee_serial_bridges_l);
+  while (n) {
+    if (&n->xbee_dev->wpan_dev == wpn) {
       spin_unlock(&n_xbee_serial_bridges_l);
       return n;
     }
@@ -248,23 +268,35 @@ xbee_serial_bridge* n_xbee_find_bridge_byxbee(struct xbee_dev_t* xbee) {
 }
 
 /* = Node Table Stuff = */
-xbee_remote_node* n_xbee_node_find_or_insert(const xbee_node_id_t* id) {
+xbee_remote_node* n_xbee_node_find_or_insert(const addr64* id) {
   char addr64_buf[ADDR64_STRING_LENGTH];
   struct xbee_remote_node** nptr = &n_xbee_node_table;
   while (*nptr) {
-    if (memcmp(&(*nptr)->node_id.ieee_addr_be, &id->ieee_addr_be, sizeof(addr64)) == 0) {
+    if (memcmp(&(*nptr)->node_addr, id, sizeof(addr64)) == 0) {
       return *nptr;
     }
     *nptr = (*nptr)->next;
   }
-  printk(KERN_INFO "%s: registering new remote node %s\n", __FUNCTION__, addr64_format(addr64_buf, &id->ieee_addr_be));
+  printk(KERN_INFO "%s: registering new remote node %s\n", __FUNCTION__, addr64_format(addr64_buf, id));
   *nptr = kmalloc(sizeof(xbee_remote_node), GFP_KERNEL);
   // memset(*nptr, 0, sizeof(xbee_remote_node));
-  memcpy(&(*nptr)->node_id, id, sizeof(xbee_node_id_t));
+  memcpy(&(*nptr)->node_addr, id, sizeof(addr64));
   (*nptr)->next = NULL;
   return 0;
 }
 
+// should be ETH_ALEN
+xbee_remote_node* n_xbee_node_find_eth(const unsigned char* addr, int len) {
+  struct xbee_remote_node* nod = n_xbee_node_table;
+  if (len > 8)
+    len = 8;
+  while (nod) {
+    if (memcmp((8 - len) + (&nod->node_addr.l), addr, len) == 0)
+      return nod;
+    nod = nod->next;
+  }
+  return 0;
+}
 
 /* = XBEE Controls */
 
@@ -534,15 +566,26 @@ int n_xbee_init_tickthread(xbee_serial_bridge* bridge) {
 
 /* = XBEE NetDev = */
 static int n_xbee_netdev_open(struct net_device* dev) {
-  printk(KERN_INFO "%s: Kernel is opening %s...\n", __FUNCTION__, dev->name);
-  return -ENOSYS;
-  // netif_start_queue(dev);
-  // return 0;
+  xbee_serial_bridge* bridge;
+  ENSURE_MODULE_RET(-EIO);
+  bridge = n_xbee_find_bridge_byndev(dev);
+  if (!bridge)
+    return -ENODEV;
+  printk(KERN_INFO "%s: Interface %s (%s) going up...\n", __FUNCTION__, dev->name, bridge->name);
+  bridge->netdev_up = 1;
+  netif_start_queue(dev);
+  return 0;
 }
 
 static int n_xbee_netdev_release(struct net_device* dev) {
-  printk(KERN_INFO "%s: Kernel is closing %s...\n", __FUNCTION__, dev->name);
-  // netif_stop_queue(dev);
+  xbee_serial_bridge* bridge;
+  ENSURE_MODULE_RET(-EIO);
+  bridge = n_xbee_find_bridge_byndev(dev);
+  if (!bridge)
+    return -ENODEV;
+  printk(KERN_INFO "%s: Interface %s (%s) going down...\n", __FUNCTION__, dev->name, bridge->name);
+  bridge->netdev_up = 0;
+  netif_stop_queue(dev);
   return 0;
 }
 
@@ -603,16 +646,86 @@ static int n_xbee_netdev_ioctl(struct net_device* dev, struct ifreq* rq, int cmd
   return -ENOSYS;
 }
 
+static int n_xbee_netdev_xmit(struct sk_buff* skb, struct net_device* dev) {
+  struct xbee_serial_bridge* bridge;
+  struct ethhdr* mh;
+  int i, err, nbcast = 0;
+  wpan_envelope_t envelope;
+  struct xbee_remote_node* rnod;
+  ENSURE_MODULE_RET(0);
+  bridge = n_xbee_find_bridge_byndev(dev);
+  if (!bridge)
+    return 0;
+  // try to find the equiv ether addr
+  mh = eth_hdr(skb);
+  // unsigned char mh->h_dest[ETH_ALEN]
+#ifdef N_XBEE_VERBOSE
+  printk(KERN_INFO "%s: request to transmit to %pM.\n", __FUNCTION__, mh->h_dest);
+#endif
+  // set initial values
+  envelope.dev = &bridge->xbee_dev->wpan_dev;
+  envelope.profile_id = WPAN_PROFILE_DIGI;
+  envelope.cluster_id = N_XBEE_CLUSTER_ID;
+  envelope.dest_endpoint = envelope.source_endpoint = N_XBEE_ENDPOINT;
+  envelope.options = 0;
+  envelope.network_address = 0xFFFE;
+  // check if broadcast addr
+  for (i = 0; i < ETH_ALEN; i++) {
+    if (mh->h_dest[i] == 0xFF)
+      continue;
+    nbcast = 1;
+    break;
+  }
+  // destination is broadcast
+  if (!nbcast) {
+    memset(&envelope.ieee_address, 0xFF, sizeof(addr64));
+    envelope.options |= WPAN_ENVELOPE_BROADCAST_ADDR;
+  }
+  else {
+    rnod = n_xbee_node_find_eth(mh->h_dest, ETH_ALEN);
+    if (!rnod) {
+#ifdef N_XBEE_VERBOSE
+      printk(KERN_INFO "%s: unable to transmit to %pM, can't find in lookup table.\n", __FUNCTION__, mh->h_dest);
+#endif
+      return NET_XMIT_DROP;
+    }
+    memcpy(&envelope.ieee_address, &rnod->node_addr.l, 8);;
+  }
+  envelope.payload = skb->data;
+  envelope.length = skb->length;
+  if ((err=wpan_envelope_send(&envelope)) != 0) {
+#ifdef N_XBEE_VERBOSE
+      printk(KERN_ALERT "%s: unable to transmit to %pM, error %d.\n", __FUNCTION__, mh->h_dest, err);
+#endif
+      return NET_XMIT_DROP;
+  }
+  return NETDEV_TX_OK;
+}
+
 static const struct net_device_ops n_xbee_netdev_ops = {
   .ndo_init = n_xbee_netdev_init_late,
   .ndo_open = n_xbee_netdev_open,
   .ndo_stop = n_xbee_netdev_release,
   .ndo_change_mtu = n_xbee_netdev_change_mtu,
   .ndo_do_ioctl = n_xbee_netdev_ioctl,
-  .ndo_get_stats = n_xbee_netdev_stats
+  .ndo_get_stats = n_xbee_netdev_stats,
+  .ndo_start_xmit = n_xbee_netdev_xmit,
 };
 
 int n_xbee_netdev_rx(const wpan_envelope_t FAR *envelope, void FAR* context) {
+  struct xbee_serial_bridge* bridge;
+  struct xbee_remote_node* remnode;
+  ENSURE_MODULE_RET(0);
+  bridge = n_xbee_find_bridge_bywpan(envelope->dev);
+  if (!bridge)
+    return 0;
+#ifdef N_XBEE_VERBOSE
+  printk(KERN_INFO "%s: %s handling packet of length %d\n", __FUNCTION__, bridge->name, envelope->length);
+#endif
+  remnode = n_xbee_node_find_or_insert(&envelope->ieee_address);
+  if (!bridge->netdev_up)
+    return 0;
+  // TODO: implement reception here
   return 0;
 }
 
@@ -774,7 +887,7 @@ void n_xbee_node_discovered(xbee_dev_t* xbee, const xbee_node_id_t *rec) {
   if (!bridge)
     return;
   printk(KERN_INFO "%s: %s discovered remote node %s.\n", __FUNCTION__, bridge->name, addr64_format(addr64_buf, &rec->ieee_addr_be));
-  n_xbee_node_find_or_insert(rec);
+  n_xbee_node_find_or_insert(&rec->ieee_addr_be);
 }
 
 // The receive data function will call tick on its own
@@ -1026,7 +1139,7 @@ static int n_xbee_serial_ioctl(struct tty_struct* tty, struct file* file, unsign
   }
 
   // Default is not implemented
-  return -ENOSYS;
+  return -EOPNOTSUPP;
 }
 
 static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, char* fp, int count) {
