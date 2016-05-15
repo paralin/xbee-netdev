@@ -34,7 +34,7 @@ As a general rule the tty name is used to create the device name. A tty called "
 
 When the user-space component attempts to set the line discipline, the module will command the xbee to enter AT configuration mode. In this sequence the module will verify that the remote device is indeed a compatible xbee with the correct baudrate to communicate, and it will also configure the xbee's API mode, and query the MAC address of the xbee. This address will be used to set the network device MAC correctly. Note, **this is a todo and has not yet been implemented**.
 
-Since the xbees use 64 bit mac addresses, there will be two MAC addresses shown on the network device. The ipv6 addr will be the true 64 bit MAC of the xbee. The ipv4 mac address will be a psuedo-address calculated by taking the first 48 bits of the 64 bit mac address.
+Since the xbees use 64 bit mac addresses, there will be two MAC addresses shown on the network device. The ipv6 addr will be the true 64 bit MAC of the xbee. The ipv4 mac address will be a psuedo-address calculated by taking the last 48 bits of the 64 bit mac address.
 
 Setting mac addresses on the interface is NOT supported as we cannot change the XBEE mac. Any calls to set_mac_address will return an error.
 

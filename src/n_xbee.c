@@ -518,6 +518,8 @@ static int n_xbee_netdev_release(struct net_device* dev) {
 static struct net_device_stats* n_xbee_netdev_stats(struct net_device* dev) {
   struct xbee_netdev_priv* priv;
   ENSURE_MODULE_RET(NULL);
+  if (!dev)
+    return NULL;
   priv = netdev_priv(dev);
   if (!priv)
     return NULL;
@@ -626,7 +628,8 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
   ndev->addr_len = ETH_ALEN;
   ndev->dev_addr = kmalloc(ndev->addr_len, GFP_KERNEL);
   ndev->addr_assign_type = NET_ADDR_PERM;
-  memcpy(ndev->dev_addr, bridge->xbee_dev->wpan_dev.address.ieee.b, ndev->addr_len);
+  // skip the first 2 bytes
+  memcpy(ndev->dev_addr, bridge->xbee_dev->wpan_dev.address.ieee.b + 2, ndev->addr_len);
 
   if ((err = register_netdev(ndev)) != 0) {
     printk(KERN_ALERT "%s: Failed to register netdev %s with error %i...", __FUNCTION__, bridge->netdevName, err);
@@ -735,11 +738,11 @@ int n_xbee_resolve_pending_dev_thread(void* data) {
 void n_xbee_node_discovered(xbee_dev_t* xbee, const xbee_node_id_t *rec) {
   xbee_serial_bridge* bridge;
   char addr64_buf[ADDR64_STRING_LENGTH];
-  printk(KERN_INFO "%s: Discovered remote node %s.\n", __FUNCTION__, addr64_format(addr64_buf, &xbee->wpan_dev.address.ieee));
   ENSURE_MODULE_NORET;
   bridge = n_xbee_find_bridge_byxbee(xbee);
   if (!bridge)
     return;
+  printk(KERN_INFO "%s: %s discovered remote node %s.\n", __FUNCTION__, bridge->name, addr64_format(addr64_buf, &rec->ieee_addr_be));
   // TODO put node into bridge node list
 }
 
