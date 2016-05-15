@@ -649,13 +649,14 @@ static int n_xbee_netdev_ioctl(struct net_device* dev, struct ifreq* rq, int cmd
 static int n_xbee_netdev_xmit(struct sk_buff* skb, struct net_device* dev) {
   struct xbee_serial_bridge* bridge;
   struct ethhdr* mh;
+  uint64_t baddr = 0x000000000000FFFF;
   int i, err, nbcast = 0;
   wpan_envelope_t envelope;
   struct xbee_remote_node* rnod;
   ENSURE_MODULE_RET(0);
   bridge = n_xbee_find_bridge_byndev(dev);
   if (!bridge)
-    return 0;
+    return NETDEV_TX_OK;
   // try to find the equiv ether addr
   mh = eth_hdr(skb);
   // unsigned char mh->h_dest[ETH_ALEN]
@@ -678,7 +679,9 @@ static int n_xbee_netdev_xmit(struct sk_buff* skb, struct net_device* dev) {
   }
   // destination is broadcast
   if (!nbcast) {
-    memset(&envelope.ieee_address, 0xFF, sizeof(addr64));
+    memcpy(&envelope.ieee_address.b, &baddr, 8);
+    memcpy(&envelope.ieee_address.l, &baddr, 8);
+    memcpy(&envelope.ieee_address.u, &baddr, 8);
     envelope.options |= WPAN_ENVELOPE_BROADCAST_ADDR;
   }
   else {
@@ -687,17 +690,17 @@ static int n_xbee_netdev_xmit(struct sk_buff* skb, struct net_device* dev) {
 #ifdef N_XBEE_VERBOSE
       printk(KERN_INFO "%s: unable to transmit to %pM, can't find in lookup table.\n", __FUNCTION__, mh->h_dest);
 #endif
-      return NET_XMIT_DROP;
+      return NETDEV_TX_OK;
     }
     memcpy(&envelope.ieee_address, &rnod->node_addr.l, 8);;
   }
   envelope.payload = skb->data;
-  envelope.length = skb->length;
+  envelope.length = skb->len;
   if ((err=wpan_envelope_send(&envelope)) != 0) {
 #ifdef N_XBEE_VERBOSE
       printk(KERN_ALERT "%s: unable to transmit to %pM, error %d.\n", __FUNCTION__, mh->h_dest, err);
 #endif
-      return NET_XMIT_DROP;
+      return NETDEV_TX_OK;
   }
   return NETDEV_TX_OK;
 }
@@ -735,7 +738,11 @@ static void n_xbee_netdev_init_early(struct net_device* dev) {
   ether_setup(dev);
   dev->netdev_ops = &n_xbee_netdev_ops;
   // dev->flags |= IFF_NOARP;
+#ifdef XBEE_USE_ACTUAL_MTU
   dev->mtu    = N_XBEE_DATA_MTU;
+#else
+  dev->mtu = 1500;
+#endif
   // set priv flags and features and mtu
   memset(priv, 0, sizeof(*priv));
 }
