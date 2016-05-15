@@ -48,6 +48,7 @@ typedef struct xbee_data_buffer {
   // amount held currently
   // NOT an index, its a size 1-index.
   int pos;
+  spinlock_t lock;
 } xbee_data_buffer;
 
 struct xbee_serial_bridge;
@@ -81,7 +82,6 @@ typedef struct xbee_serial_bridge {
   struct xbee_data_buffer* recvbuf;
   xbee_dev_t* xbee_dev;
   spinlock_t write_lock;
-  spinlock_t read_lock;
   int netdev_up;
   // during the pending state, this will be set
   // do NOT free

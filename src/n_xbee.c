@@ -74,6 +74,7 @@ struct xbee_data_buffer* n_xbee_alloc_buffer(int size) {
   buf->size = size;
   buf->buffer = kmalloc(sizeof(unsigned char) * size, GFP_KERNEL);
   buf->pos = 0;
+  spin_lock_init(&buf->lock);
   return buf;
 }
 
@@ -156,8 +157,8 @@ void n_xbee_remove_bridge(xbee_serial_bridge* ntd) {
     n_last = n;
     n = n->next;
   }
-  printk(KERN_ALERT "%s: BUG: couldn't find bridge %p in list.\n", __FUNCTION__, ntd);
   spin_unlock(&n_xbee_serial_bridges_l);
+  printk(KERN_ALERT "%s: BUG: couldn't find bridge %p in list.\n", __FUNCTION__, ntd);
 }
 
 // Free all bridges
@@ -179,10 +180,10 @@ void n_xbee_free_remote_nodetable(void) {
   struct xbee_remote_node* nod = n_xbee_node_table;
   n_xbee_node_table = NULL;
   while (nod) {
-    nodn = nod;
+    nodn = nod->next;
     // do something to free
-    kfree(nodn);
-    nod = nod->next;
+    kfree(nod);
+    nod = nodn;
   }
 }
 
@@ -203,6 +204,7 @@ xbee_serial_bridge* n_xbee_find_bridge_byname(const char* name) {
 
 // Find by tty
 xbee_serial_bridge* n_xbee_find_bridge_bytty(struct tty_struct* tty) {
+#ifdef N_XBEE_NO_USE_DISC_DATA
   xbee_serial_bridge* n;
   spin_lock(&n_xbee_serial_bridges_l);
   n = n_xbee_serial_bridges;
@@ -215,6 +217,9 @@ xbee_serial_bridge* n_xbee_find_bridge_bytty(struct tty_struct* tty) {
   }
   spin_unlock(&n_xbee_serial_bridges_l);
   return NULL;
+#else
+  return (xbee_serial_bridge*) tty->disc_data;
+#endif
 }
 
 // Find by netdev
@@ -223,23 +228,16 @@ xbee_serial_bridge* n_xbee_find_bridge_byndev(struct net_device* ndev) {
   if (!priv)
     return NULL;
   return priv->bridge;
-  /*
-  xbee_serial_bridge* n = n_xbee_serial_bridges;
-  spin_lock(&n_xbee_serial_bridges_l);
-  while (n) {
-    if (n->netdev == ndev) {
-      spin_unlock(&n_xbee_serial_bridges_l);
-      return n;
-    }
-    n = n->next;
-  }
-  spin_unlock(&n_xbee_serial_bridges_l);
-  */
 }
 
 // Find by wpan_dev
 xbee_serial_bridge* n_xbee_find_bridge_bywpan(struct wpan_dev_t* wpn) {
-  xbee_serial_bridge* n = n_xbee_serial_bridges;
+  xbee_serial_bridge* n;
+  if (wpn->extra_ptr)
+    return (xbee_serial_bridge*) wpn->extra_ptr;
+
+  printk(KERN_ALERT "%s: cache miss on extra_ptr, bugfix.\n", __FUNCTION__);
+  n = n_xbee_serial_bridges;
   spin_lock(&n_xbee_serial_bridges_l);
   while (n) {
     if (&n->xbee_dev->wpan_dev == wpn) {
@@ -270,18 +268,24 @@ xbee_serial_bridge* n_xbee_find_bridge_byxbee(struct xbee_dev_t* xbee) {
 /* = Node Table Stuff = */
 xbee_remote_node* n_xbee_node_find_or_insert(const addr64* id) {
   char addr64_buf[ADDR64_STRING_LENGTH];
-  struct xbee_remote_node** nptr = &n_xbee_node_table;
-  while (*nptr) {
-    if (memcmp(&(*nptr)->node_addr, id, sizeof(addr64)) == 0) {
-      return *nptr;
+  struct xbee_remote_node* nnod;
+  struct xbee_remote_node* pnod = NULL;
+  struct xbee_remote_node* nod = n_xbee_node_table;
+  while (nod) {
+    if (memcmp(&nod->node_addr, id, sizeof(addr64)) == 0) {
+      return nod;
     }
-    *nptr = (*nptr)->next;
+    pnod = nod;
+    nod = nod->next;
   }
   printk(KERN_INFO "%s: registering new remote node %s\n", __FUNCTION__, addr64_format(addr64_buf, id));
-  *nptr = kmalloc(sizeof(xbee_remote_node), GFP_KERNEL);
-  // memset(*nptr, 0, sizeof(xbee_remote_node));
-  memcpy(&(*nptr)->node_addr, id, sizeof(addr64));
-  (*nptr)->next = NULL;
+  nnod = kmalloc(sizeof(xbee_remote_node), GFP_KERNEL);
+  memcpy(&nnod->node_addr, id, sizeof(addr64));
+  nnod->next = NULL;
+  if (pnod)
+    pnod->next = nnod;
+  else
+    n_xbee_node_table = nnod;
   return 0;
 }
 
@@ -515,7 +519,8 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
     iterations++;
   }
 
-  msleep(50);
+  // TODO: might be decreasable
+  msleep(1000);
   N_XBEE_CHECK_CANCEL;
   n_xbee_flush_buffer(bridge->tty);
 
@@ -550,18 +555,17 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
 }
 
 int n_xbee_serial_tick_thread(void* data);
-int n_xbee_init_tickthread(xbee_serial_bridge* bridge) {
+void n_xbee_init_tickthread(xbee_serial_bridge* bridge) {
   xbee_tick_threadstate* st;
   if (!bridge || bridge->tick_state)
-    return 0;
+    return;
   st = bridge->tick_state = (xbee_tick_threadstate*) kmalloc(sizeof(xbee_tick_threadstate), GFP_KERNEL);
   if (!st)
-    return -ENOMEM;
+    return;
   spin_lock_init(&st->tick_lock);
   st->should_exit = 0;
   st->bridge = bridge;
   kthread_run(n_xbee_serial_tick_thread, (void*)st, "xbee_tickthread");
-  return 0;
 }
 
 /* = XBEE NetDev = */
@@ -618,13 +622,9 @@ static int n_xbee_netdev_change_mtu(struct net_device* dev, int new_mtu) {
   printk(KERN_INFO "%s: Changing MTU of %s to %u...\n", __FUNCTION__, dev->name, new_mtu);
 
   // Stop the net queue
-  // netif_stop_queue(dev);
-
-  // Get the spinlock
-  spin_lock(&priv->bridge->write_lock);
-
-  // Stop the net queue (again) just to be sure
-  // netif_stop_queue(dev);
+  netif_stop_queue(dev);
+  
+  // TODO: re-introduce locking here
 
   // Reset the fragmentation system
   // TODO
@@ -636,8 +636,7 @@ static int n_xbee_netdev_change_mtu(struct net_device* dev, int new_mtu) {
   // TODO
 
   // Start the net queue
-  spin_unlock(&priv->bridge->write_lock);
-  // netif_wake_queue(dev);
+  netif_wake_queue(dev);
   return 0;
 }
 
@@ -649,7 +648,6 @@ static int n_xbee_netdev_ioctl(struct net_device* dev, struct ifreq* rq, int cmd
 static int n_xbee_netdev_xmit(struct sk_buff* skb, struct net_device* dev) {
   struct xbee_serial_bridge* bridge;
   struct ethhdr* mh;
-  uint64_t baddr = 0x000000000000FFFF;
   int i, err, nbcast = 0;
   wpan_envelope_t envelope;
   struct xbee_remote_node* rnod;
@@ -657,6 +655,7 @@ static int n_xbee_netdev_xmit(struct sk_buff* skb, struct net_device* dev) {
   bridge = n_xbee_find_bridge_byndev(dev);
   if (!bridge)
     return NETDEV_TX_OK;
+  memset(&envelope, 0, sizeof(envelope));
   // try to find the equiv ether addr
   mh = eth_hdr(skb);
   // unsigned char mh->h_dest[ETH_ALEN]
@@ -668,8 +667,7 @@ static int n_xbee_netdev_xmit(struct sk_buff* skb, struct net_device* dev) {
   envelope.profile_id = WPAN_PROFILE_DIGI;
   envelope.cluster_id = N_XBEE_CLUSTER_ID;
   envelope.dest_endpoint = envelope.source_endpoint = N_XBEE_ENDPOINT;
-  envelope.options = 0;
-  envelope.network_address = 0xFFFE;
+  envelope.network_address = WPAN_NET_ADDR_UNDEFINED;
   // check if broadcast addr
   for (i = 0; i < ETH_ALEN; i++) {
     if (mh->h_dest[i] == 0xFF)
@@ -679,9 +677,7 @@ static int n_xbee_netdev_xmit(struct sk_buff* skb, struct net_device* dev) {
   }
   // destination is broadcast
   if (!nbcast) {
-    memcpy(&envelope.ieee_address.b, &baddr, 8);
-    memcpy(&envelope.ieee_address.l, &baddr, 8);
-    memcpy(&envelope.ieee_address.u, &baddr, 8);
+    envelope.ieee_address = *WPAN_IEEE_ADDR_BROADCAST;
     envelope.options |= WPAN_ENVELOPE_BROADCAST_ADDR;
   }
   else {
@@ -692,7 +688,7 @@ static int n_xbee_netdev_xmit(struct sk_buff* skb, struct net_device* dev) {
 #endif
       return NETDEV_TX_OK;
     }
-    memcpy(&envelope.ieee_address, &rnod->node_addr.l, 8);;
+    memcpy(&envelope.ieee_address, &rnod->node_addr, 8);
   }
   envelope.payload = skb->data;
   envelope.length = skb->len;
@@ -810,10 +806,7 @@ void n_xbee_free_netdev(xbee_serial_bridge* n) {
 // ticks the xbee
 // since we register all the callbacks in the xbee code
 // we can just call tick.
-void n_xbee_handle_runtime_frames(xbee_serial_bridge* bridge) {
-  ENSURE_MODULE_NORET;
-  if (!bridge || !bridge->tick_state)
-    return;
+inline void n_xbee_handle_runtime_frames(xbee_serial_bridge* bridge) {
   spin_lock(&bridge->tick_state->tick_lock);
   xbee_dev_tick(bridge->xbee_dev);
   spin_unlock(&bridge->tick_state->tick_lock);
@@ -858,18 +851,16 @@ int n_xbee_resolve_pending_dev(xbee_pending_dev* dev) {
   if (dev->cancel)
     return -1;
 
-  if (n_xbee_init_tickthread(dev->bridge) != 0) {
-    printk(KERN_ALERT "%s: %s n_xbee_init_tickthread indicated failure, aborting.\n", __FUNCTION__, dev->bridge->tty->name);
+  if (n_xbee_init_netdev(dev->bridge) != 0) {
+    printk(KERN_ALERT "%s: %s n_xbee_init_netdev indicated failure, aborting.\n", __FUNCTION__, dev->bridge->tty->name);
     return -ENODEV;
   }
 
   if (dev->cancel)
     return -1;
 
-  if (n_xbee_init_netdev(dev->bridge) != 0) {
-    printk(KERN_ALERT "%s: %s n_xbee_init_netdev indicated failure, aborting.\n", __FUNCTION__, dev->bridge->tty->name);
-    return -ENODEV;
-  }
+  n_xbee_init_tickthread(dev->bridge);
+
   dev->bridge->pend_dev = NULL;
   return 0;
 }
@@ -903,7 +894,7 @@ void n_xbee_node_discovered(xbee_dev_t* xbee, const xbee_node_id_t *rec) {
 int n_xbee_serial_tick_thread(void* data) {
   int ourId, iterSinceDiscover = 0;
   xbee_tick_threadstate* tstate = (xbee_tick_threadstate*) data;
-  if (!data || !tstate || !tstate->bridge || tstate->should_exit)
+  if (!data || !tstate || !tstate->bridge || tstate->should_exit || !tstate->bridge->name)
     return 0;
   ourId = ++xbee_tick_thread_counter;
   printk(KERN_INFO "%s: starting tick thread [%d] for %s\n", __FUNCTION__, ourId, tstate->bridge->name);
@@ -959,7 +950,6 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
 
   bridge = (xbee_serial_bridge*)kmalloc(sizeof(xbee_serial_bridge), GFP_KERNEL);
   spin_lock_init(&bridge->write_lock);
-  spin_lock_init(&bridge->read_lock);
   bridge->tty = tty;
   bridge->name = (char*)kmalloc(sizeof(char) * (strlen(tty->name) + 1), GFP_KERNEL);
   bridge->name[strlen(tty->name)] = '\0';
@@ -982,6 +972,7 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   bridge->xbee_dev->idle_timeout = 100;
   // Don't use flow control TODO
   bridge->xbee_dev->flags &= ~XBEE_DEV_FLAG_USE_FLOWCONTROL;
+  bridge->xbee_dev->wpan_dev.extra_ptr = bridge;
 
   ndevnlen = strlen(XBEE_NETDEV_PREFIX) + nlen;
   bridge->netdevName = (char*)kmalloc(sizeof(char) * (ndevnlen + 1), GFP_KERNEL);
@@ -998,6 +989,9 @@ static int n_xbee_serial_open(struct tty_struct* tty) {
   bridge->pend_dev->noFreeBridge = 0;
   bridge->tick_state = 0;
 
+#ifndef N_XBEE_NO_USE_DISC_DATA
+  tty->disc_data = bridge;
+#endif
   n_xbee_insert_bridge(bridge);
   kthread_run(n_xbee_resolve_pending_dev_thread, (void*)bridge->pend_dev, "xbee_penddev");
   return 0;
@@ -1012,20 +1006,19 @@ static ssize_t n_xbee_chars_in_buffer(struct tty_struct* tty) {
   return bridge->recvbuf->pos;
 }
 
-// locks read_lock
 static void n_xbee_flush_buffer(struct tty_struct* tty) {
   struct xbee_serial_bridge* bridge;
   ENSURE_MODULE_NORET;
 
   // Get the pointer to the bridge
   bridge = n_xbee_find_bridge_bytty(tty);
-  if (!bridge)
+  if (!bridge || !bridge->recvbuf || !bridge->recvbuf->pos)
     return;
-  // Acquire read lock
-  spin_lock(&bridge->read_lock);
+  // Acquire buf lock
   printk(KERN_INFO "%s: %s flushing buffer by kernel request.\n", __FUNCTION__, tty->name);
+  spin_lock(&bridge->recvbuf->lock);
   bridge->recvbuf->pos = 0;
-  spin_unlock(&bridge->read_lock);
+  spin_unlock(&bridge->recvbuf->lock);
 }
 
 // Userspace requests a read from a tty
@@ -1046,7 +1039,7 @@ static ssize_t n_xbee_read(struct tty_struct* tty, struct file* file, unsigned c
     // return -EAGAIN;
 
   // acquire read lock
-  spin_lock(&bridge->read_lock);
+  spin_lock(&bridge->recvbuf->lock);
 
   // read as much as we can
   ntread = bridge->recvbuf->pos;
@@ -1075,7 +1068,7 @@ static ssize_t n_xbee_read(struct tty_struct* tty, struct file* file, unsigned c
     bridge->recvbuf->pos = nleft;
   }
 
-  spin_unlock(&bridge->read_lock);
+  spin_unlock(&bridge->recvbuf->lock);
   return ntread;
 }
 
@@ -1155,9 +1148,6 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
   int finlen;
 
 #ifdef N_XBEE_VERBOSE
-#ifdef XBEE_SERIAL_VERBOSE
-  int i;
-#endif
   printk(KERN_INFO "%s: from %s with size %d\n", __FUNCTION__, tty->name, count);
 #endif
 
@@ -1168,8 +1158,7 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
     return;
   dbuf = bridge->recvbuf;
 
-  spin_lock(&bridge->read_lock);
-
+  spin_lock(&dbuf->lock);
   if (count > dbuf->size) {
     printk(KERN_ALERT "%s reading %d bytes which is more than the entire receive buffer size %d\n", tty->name, count, dbuf->size);
     count = dbuf->size;
@@ -1183,24 +1172,11 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
   }
   memcpy((dbuf->buffer + dbuf->pos), cp, count);
   dbuf->pos += count;
-
-#if defined(N_XBEE_VERBOSE) && defined(XBEE_SERIAL_VERBOSE)
-  printk(KERN_INFO "%s: recv buf (%d): [", __FUNCTION__, dbuf->pos);
-  {
-    for (i = 0; i < dbuf->pos; i++) {
-      if (dbuf->buffer[i] < 33 || dbuf->buffer[i] > 126)
-        printk("(0x%x)", (int)dbuf->buffer[i]);
-      else
-        printk("(%c, 0x%x)", (char)dbuf->buffer[i], (int)dbuf->buffer[i]);
-    }
-    printk("]\n");
-  }
-#endif
-  spin_unlock(&bridge->read_lock);
+  spin_unlock(&dbuf->lock);
 
   // If we're not pending device setup
-  if (!bridge->pend_dev && bridge->netdevInitialized)
-    n_xbee_handle_runtime_frames(bridge);
+  // if (!bridge->pend_dev && bridge->netdevInitialized)
+  //   n_xbee_handle_runtime_frames(bridge);
 }
 
 static void n_xbee_write_wakeup(struct tty_struct* tty) {
@@ -1228,10 +1204,13 @@ struct tty_ldisc_ops n_xbee_ldisc = {
   .write_wakeup = n_xbee_write_wakeup
 };
 
+//marking both with __init or __exit causes errors ??
+
 static int __init n_xbee_init(void) {
   int result;
   printk(KERN_INFO "%s: xbee-net initializing...\n", __FUNCTION__);
 
+  n_xbee_node_table = NULL;
   n_xbee_init_bridge_ll();
   xbee_tick_thread_counter = 0;
   result = tty_register_ldisc(N_XBEE_LISC, &n_xbee_ldisc);
