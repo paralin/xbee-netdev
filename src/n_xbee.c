@@ -456,12 +456,6 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
   N_XBEE_CHECK_CANCEL;
   n_xbee_flush_buffer(bridge->tty);
 
-  // init the wpan layer
-  xbee_wpan_init(xbee, xbee_endpoints);
-
-  // register the discovery handler
-  xbee_disc_add_node_id_handler(xbee, &n_xbee_node_discovered);
-
   if ((err = xbee_cmd_init_device(xbee)) != 0) {
     printk(KERN_ALERT "%s: Error initing device: %d\n", __FUNCTION__, err);
     return err;
@@ -481,9 +475,14 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
     return err;
   }
 
+  // init the wpan layer
+  xbee_wpan_init(xbee, xbee_endpoints);
+
+  // register the discovery handler
+  xbee_disc_add_node_id_handler(xbee, &n_xbee_node_discovered);
+
   // trigger discovery for everyone
   xbee_disc_discover_nodes(xbee, NULL);
-
   return 0;
 }
 
