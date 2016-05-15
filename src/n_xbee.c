@@ -174,6 +174,18 @@ void n_xbee_free_all_bridges(void) {
   }
 }
 
+void n_xbee_free_remote_nodetable(void) {
+  struct xbee_remote_node* nodn;
+  struct xbee_remote_node* nod = n_xbee_node_table;
+  n_xbee_node_table = NULL;
+  while (nod) {
+    nodn = nod;
+    // do something to free
+    kfree(nodn);
+    nod = nod->next;
+  }
+}
+
 // Find by name
 xbee_serial_bridge* n_xbee_find_bridge_byname(const char* name) {
   xbee_serial_bridge* n = n_xbee_serial_bridges;
@@ -234,6 +246,25 @@ xbee_serial_bridge* n_xbee_find_bridge_byxbee(struct xbee_dev_t* xbee) {
   spin_unlock(&n_xbee_serial_bridges_l);
   return NULL;
 }
+
+/* = Node Table Stuff = */
+xbee_remote_node* n_xbee_node_find_or_insert(const xbee_node_id_t* id) {
+  char addr64_buf[ADDR64_STRING_LENGTH];
+  struct xbee_remote_node** nptr = &n_xbee_node_table;
+  while (*nptr) {
+    if (memcmp(&(*nptr)->node_id.ieee_addr_be, &id->ieee_addr_be, sizeof(addr64)) == 0) {
+      return *nptr;
+    }
+    *nptr = (*nptr)->next;
+  }
+  printk(KERN_INFO "%s: registering new remote node %s\n", __FUNCTION__, addr64_format(addr64_buf, &id->ieee_addr_be));
+  *nptr = kmalloc(sizeof(xbee_remote_node), GFP_KERNEL);
+  // memset(*nptr, 0, sizeof(xbee_remote_node));
+  memcpy(&(*nptr)->node_id, id, sizeof(xbee_node_id_t));
+  (*nptr)->next = NULL;
+  return 0;
+}
+
 
 /* = XBEE Controls */
 
@@ -743,7 +774,7 @@ void n_xbee_node_discovered(xbee_dev_t* xbee, const xbee_node_id_t *rec) {
   if (!bridge)
     return;
   printk(KERN_INFO "%s: %s discovered remote node %s.\n", __FUNCTION__, bridge->name, addr64_format(addr64_buf, &rec->ieee_addr_be));
-  // TODO put node into bridge node list
+  n_xbee_node_find_or_insert(rec);
 }
 
 // The receive data function will call tick on its own
@@ -1098,6 +1129,7 @@ static void __exit n_xbee_cleanup(void) {
   if (!n_xbee_serial_bridges)
     tty_unregister_ldisc(N_XBEE_LISC);
   n_xbee_free_all_bridges();
+  n_xbee_free_remote_nodetable();
 }
 
 module_init(n_xbee_init);

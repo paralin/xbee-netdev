@@ -15,6 +15,7 @@
 #include <asm/uaccess.h>
 
 #include <xbee/device.h>
+#include <xbee/discovery.h>
 
 #define N_XBEE_LISC 17
 
@@ -57,6 +58,14 @@ typedef struct xbee_tick_threadstate {
   spinlock_t tick_lock;
 } xbee_tick_threadstate;
 int xbee_tick_thread_counter;
+
+// Discovered remote node
+struct xbee_remote_node;
+typedef struct xbee_remote_node {
+  xbee_node_id_t node_id;
+  struct xbee_remote_node* next;
+} xbee_remote_node;
+xbee_remote_node* n_xbee_node_table;
 
 /*
  * One bridge is created per registered xbee.
