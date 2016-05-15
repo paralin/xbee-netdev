@@ -466,6 +466,9 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
     return err;
   }
 
+  // trigger discovery for everyone
+  xbee_disc_discover_nodes(xbee, NULL);
+
   return 0;
 }
 
