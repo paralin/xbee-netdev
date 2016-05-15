@@ -220,6 +220,21 @@ xbee_serial_bridge* n_xbee_find_bridge_byndev(struct net_device* ndev) {
   return NULL;
 }
 
+// Find by xbee
+xbee_serial_bridge* n_xbee_find_bridge_byxbee(struct xbee_dev_t* xbee) {
+  xbee_serial_bridge* n = n_xbee_serial_bridges;
+  spin_lock(&n_xbee_serial_bridges_l);
+  while (n) {
+    if (n->xbee_dev == xbee) {
+      spin_unlock(&n_xbee_serial_bridges_l);
+      return n;
+    }
+    n = n->next;
+  }
+  spin_unlock(&n_xbee_serial_bridges_l);
+  return NULL;
+}
+
 /* = XBEE Controls */
 
 // Prepare to transmit by waking up the device, etc
@@ -278,7 +293,7 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
   iterations = 0;
   while (1) {
     N_XBEE_CHECK_CANCEL;
-    N_XBEE_CHECK_ITERATIONS(iterations, 400);
+    N_XBEE_CHECK_ITERATIONS(iterations, 4000);
 
     mode = xbee_atmode_tick(xbee);
 
@@ -292,7 +307,7 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge, xbee_pending_dev* pend_dev) {
     }
 
     // sleep 5 milliseconds
-    msleep(5);
+    msleep(1);
     iterations ++;
   }
 
@@ -719,15 +734,21 @@ int n_xbee_resolve_pending_dev_thread(void* data) {
 }
 
 void n_xbee_node_discovered(xbee_dev_t* xbee, const xbee_node_id_t *rec) {
+  xbee_serial_bridge* bridge;
   char addr64_buf[ADDR64_STRING_LENGTH];
   printk(KERN_INFO "%s: Discovered remote node %s.\n", __FUNCTION__, addr64_format(addr64_buf, &xbee->wpan_dev.address.ieee));
+  ENSURE_MODULE_NORET;
+  bridge = n_xbee_find_bridge_byxbee(xbee);
+  if (!bridge)
+    return;
+  // TODO put node into bridge node list
 }
 
 // The receive data function will call tick on its own
 // However, there might be some other xbee code internals
 // that would want to query the xbee on a timed basis.
 int n_xbee_serial_tick_thread(void* data) {
-  int ourId, iterSinceDiscover;
+  int ourId, iterSinceDiscover = 0;
   xbee_tick_threadstate* tstate = (xbee_tick_threadstate*) data;
   if (!data || !tstate || !tstate->bridge || tstate->should_exit)
     return 0;
