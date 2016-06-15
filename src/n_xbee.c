@@ -79,6 +79,8 @@ struct xbee_data_buffer* n_xbee_alloc_buffer(int size) {
 }
 
 void n_xbee_free_buffer(struct xbee_data_buffer* buf) {
+  if (!buf)
+    return;
   if (buf->buffer)
     kfree(buf->buffer);
   kfree(buf);
@@ -1172,6 +1174,8 @@ static void n_xbee_receive_buf(struct tty_struct* tty, const unsigned char* cp, 
   if (!bridge)
     return;
   dbuf = bridge->recvbuf;
+  if (!dbuf)
+    return;
 
   spin_lock_irqsave(&dbuf->lock, flags);
   if (count > dbuf->size) {
