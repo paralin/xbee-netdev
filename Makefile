@@ -42,6 +42,9 @@ CFLAGS += -DWPAN_APS_VERBOSE
 # Enabel verbsity of this module
 CFLAGS += -DN_XBEE_VERBOSE
 
+# Handle arp packets in the driver
+CFLAGS += -DN_XBEE_ARP_RESPONDER
+
 CFLAGS += -g
 DEPS += -pthread
 

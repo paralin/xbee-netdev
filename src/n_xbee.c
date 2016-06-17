@@ -24,12 +24,22 @@
 #include <linux/if_tun.h>
 
 #include <net/ethernet.h>
+#include <netinet/in.h>
+
 
 // compat with old printk defs
 #define KERN_INFO
 #define KERN_ALERT
 #define printk printf
 #define msleep(TIME) usleep(TIME * 1000)
+
+struct ether_arp {
+  struct arphdr ea_hdr;
+  unsigned char  arp_sha[6]; /* sender hardware address */
+  unsigned char  arp_spa[4]; /* sender protocol address */
+  unsigned char  arp_tha[6]; /* target hardware address */
+  unsigned char  arp_tpa[4];
+};
 
 /* == Xbee stuff == */
 const xbee_dispatch_table_entry_t xbee_frame_handlers[] =
@@ -50,6 +60,8 @@ wpan_ep_state_t zdo_ep_state = { 0 };
 wpan_ep_state_t zcl_ep_state = { 0 };
 
 int n_xbee_netdev_rx(const wpan_envelope_t* envelope, void* context);
+void n_xbee_xmit_ether_packet(struct xbee_serial_bridge* bridge, const void* buffer, int len);
+
 const wpan_cluster_table_entry_t xbee_data_clusters[] = {
   { N_XBEE_CLUSTER_ID, NULL, NULL, WPAN_CLUST_FLAG_INOUT | WPAN_CLUST_FLAG_NOT_ZCL },
   // if we don't set ATAO to 0...
@@ -131,12 +143,14 @@ xbee_remote_node* n_xbee_node_find_or_insert(const addr64* id) {
 }
 
 // should be ETH_ALEN
-xbee_remote_node* n_xbee_node_find_eth(const unsigned char* addr, int len) {
+xbee_remote_node* n_xbee_node_find_eth(const void* addr, int len) {
+  void* tocmp;
   struct xbee_remote_node* nod = n_xbee_node_table;
   if (len > 8)
     len = 8;
   while (nod) {
-    if (memcmp((8 - len) + (&nod->node_addr.l), addr, len) == 0)
+    tocmp = (nod->node_addr) + (8 - len);
+    if (memcmp(tocmp, addr, len) == 0)
       return nod;
     nod = nod->next;
   }
@@ -145,10 +159,10 @@ xbee_remote_node* n_xbee_node_find_eth(const unsigned char* addr, int len) {
 
 /* = XBEE Controls */
 #define N_XBEE_CHECK_ITERATIONS(iter, itern) \
-    if (iterations >= itern) { \
-      printk(KERN_ALERT "%s: Timeout waiting for AT mode\n", __FUNCTION__); \
-      return -ETIMEDOUT; \
-    }
+  if (iterations >= itern) { \
+    printk(KERN_ALERT "%s: Timeout waiting for AT mode\n", __FUNCTION__); \
+    return -ETIMEDOUT; \
+  }
 
 // Checks the tty to see if there is really an xbee
 // on the other end, and if so, it's communicating right.
@@ -159,21 +173,21 @@ xbee_remote_node* n_xbee_node_find_eth(const unsigned char* addr, int len) {
 //   - Attempt to send API frame with AT command to get API mode.
 //   - If it does not return OR returns a mode other than 1, revert to ATMODE
 #define CHECK_MISC_ATMODE_ERRS \
-    else if (mode == -EPERM) { \
-      printk(KERN_ALERT "%s: [bug] After sending, xbee code isn't waiting for a response.\n", __FUNCTION__); \
-      return -EIO; \
-    } \
-    else if (mode == -ENOSPC) { \
-      printk(KERN_ALERT "%s: [bug] Response from AT cmd was too big, but should only be 1-2 characters.\n", __FUNCTION__); \
-      return -EIO; \
-    } \
-    else if (mode == -ETIMEDOUT) { \
-      printk(KERN_ALERT "%s: Timeout waiting for AT response.\n", __FUNCTION__); \
-      return -ETIMEDOUT; \
-    } else { \
-      printk(KERN_ALERT "%s: Unexpected error returned from xbee_atmode_read_response: %d\n", __FUNCTION__, mode); \
-      return -EIO; \
-    }
+  else if (mode == -EPERM) { \
+    printk(KERN_ALERT "%s: [bug] After sending, xbee code isn't waiting for a response.\n", __FUNCTION__); \
+    return -EIO; \
+  } \
+else if (mode == -ENOSPC) { \
+  printk(KERN_ALERT "%s: [bug] Response from AT cmd was too big, but should only be 1-2 characters.\n", __FUNCTION__); \
+  return -EIO; \
+} \
+else if (mode == -ETIMEDOUT) { \
+  printk(KERN_ALERT "%s: Timeout waiting for AT response.\n", __FUNCTION__); \
+  return -ETIMEDOUT; \
+} else { \
+  printk(KERN_ALERT "%s: Unexpected error returned from xbee_atmode_read_response: %d\n", __FUNCTION__, mode); \
+  return -EIO; \
+}
 #define CHECK_RESP_BUF_SIZE 255
 void n_xbee_node_discovered(xbee_dev_t* xbee, const xbee_node_id_t *rec);
 int n_xbee_check_tty(xbee_serial_bridge* bridge) {
@@ -202,7 +216,7 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge) {
     }
 
     // msleep 5 milliseconds
-    msleep(1);
+    msleep(5);
     iterations ++;
   }
 
@@ -356,6 +370,7 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge) {
     // msleep(1);
     iterations++;
     xbee_dev_tick(xbee);
+    pthread_yield();
   } while ((err = xbee_cmd_query_status(xbee)) == -EBUSY);
   if (err != 0) {
     printk(KERN_ALERT "%s: Error waiting for device query: %d\n", __FUNCTION__, err);
@@ -380,7 +395,6 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
   struct sockaddr_ll sall;
   struct ifreq ifr;
 
-  flags &= ~IFF_MULTICAST;
   if (!bridge || !bridge->name) return -1;
   if (bridge->netdevInitialized) {
     printk(KERN_ALERT "%s: Net bridge %s already inited!\n", __FUNCTION__, bridge->netdevName);
@@ -418,7 +432,8 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
 
   strcpy(bridge->netdevName, ifr.ifr_name);
   bridge->netdev = fd;
-  // bridge->netdev_idx = ifr.ifr_ifindex;
+  bridge->netdev_idx = ifr.ifr_ifindex;
+  bridge->netdev_sock = socket(AF_INET, SOCK_DGRAM, 0);
   bridge->netdevInitialized = 1;
 
   // set hwaddr
@@ -426,12 +441,6 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
   ifr.ifr_hwaddr.sa_family = ARPHRD_ETHER;
   if (ioctl(fd, SIOCSIFHWADDR, (void *)&ifr) < 0) {
     printk(KERN_ALERT "%s: unable to set MAC addr, %d (%s)...\n", __FUNCTION__, errno, strerror(errno));
-  }
-
-  // set mtu
-  ifr.ifr_mtu = N_XBEE_DATA_MTU;
-  if (ioctl(fd, SIOCSIFMTU, (void *)&ifr) < 0) {
-    printk(KERN_ALERT "%s: unable to set mtu, %d (%s)...\n", __FUNCTION__, errno, strerror(errno));
   }
 
   return 0;
@@ -443,8 +452,10 @@ void n_xbee_free_netdev(xbee_serial_bridge* n) {
   if (!n->netdev) return;
   if (n->netdevName)
     printk(KERN_INFO "%s: Shutting down net bridge %s...\n", __FUNCTION__, n->netdevName);
+  if (n->netdev_sock)
+    close(n->netdev_sock);
   close(n->netdev);
-  n->netdev = 0;
+  n->netdev = n->netdev_sock = 0;
 }
 
 // ticks the xbee
@@ -455,7 +466,7 @@ inline void n_xbee_handle_runtime_frames(xbee_serial_bridge* bridge) {
 }
 
 /* = XBEE Detection and Setup  =
- */
+*/
 
 // if return anything but zero, call n_xbee_free_bridge if NOT noFreeBridge
 int n_xbee_resolve_pending_dev(xbee_serial_bridge* bridge) {
@@ -551,8 +562,86 @@ static int n_xbee_serial_open(xbee_serial_t* serial) {
   return 0;
 }
 
+#ifdef N_XBEE_ARP_RESPONDER
+int n_xbee_netdev_handle_arp(xbee_serial_bridge* bridge, const wpan_envelope_t* envelope) {
+  struct arphdr* arph;
+  struct ether_arp* arpeh;
+  struct ether_arp* txarpeh;
+  struct ether_header* eh;
+  struct ether_header* txeh;
+  struct ifreq ifr;
+  unsigned char* txbuf;
+  const int txlen = sizeof(struct ether_header) + sizeof(struct ether_arp);
+
+  eh = (struct ether_header*)envelope->payload;
+  arph = (struct arphdr*)(envelope->payload + N_XBEE_ETHHDR_LEN);
+  printk(KERN_INFO "%s: handling arp len %d op proto 0x%08x hrd proto 0x%08x.\n", __FUNCTION__, envelope->length, ntohs(arph->ar_pro), ntohs(arph->ar_hrd));
+  if (ntohs(arph->ar_op) != ARPOP_REQUEST) {
+    printk(KERN_INFO "%s: unknown ar_op %u!\n", __FUNCTION__, htons(arph->ar_op));
+    return 1;
+  }
+
+  if (htons(arph->ar_hrd) != 1) {
+    printk(KERN_INFO "%s: unknown arp_hrd %u!\n", __FUNCTION__, htons(arph->ar_hrd));
+    return 2;
+  }
+
+  if (htons(arph->ar_pro) != 0x0800) {
+    printk(KERN_INFO "%s: unknown arp_pro %u!\n", __FUNCTION__, htons(arph->ar_pro));
+    return 3;
+  }
+
+  if (arph->ar_hln != 6 || arph->ar_pln != 4) {
+    printk(KERN_INFO "%s: unknown ar_hlen %u or ar_plen %u!\n", __FUNCTION__, arph->ar_hln, arph->ar_pln);
+    return 4;
+  }
+
+  printk(KERN_INFO "%s: handling arp request.", __FUNCTION__);
+  arpeh = (struct ether_arp*)arph;
+
+  // compare target ip to our ip
+  memset(&ifr, 0, sizeof(struct ifreq));
+  ifr.ifr_addr.sa_family = AF_INET;
+  ifr.ifr_ifindex = bridge->netdev_idx;
+  strncpy(ifr.ifr_name, bridge->netdevName, IFNAMSIZ-1);
+  if (ioctl(bridge->netdev_sock, SIOCGIFADDR, &ifr) < 0) {
+    printk(KERN_ALERT "%s: unable to check IP of netdev, %d (%s)\n", __FUNCTION__, errno, strerror(errno));
+    return 6;
+  }
+
+  // compare
+  if (memcmp(&((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr, &arpeh->arp_tpa, sizeof(arpeh->arp_tpa)) != 0) {
+    return 7;
+  }
+
+  printk(KERN_ALERT "%s: sending arp response.", __FUNCTION__);
+  // build arp packet
+  // do we need the 4 byte header here?
+  txbuf = malloc(txlen);
+  txeh = (struct ether_header*)(txbuf + N_XBEE_PREAMBLE_LEN);
+  txeh->ether_type = htons(ETHERTYPE_ARP);
+  memcpy(txeh->ether_dhost, eh->ether_shost, 6);
+  memcpy(txeh->ether_shost, (bridge->xbee_dev->wpan_dev.address.ieee.b) + 2, 6);
+
+  txarpeh = (struct ether_arp*)(txbuf + N_XBEE_PREAMBLE_LEN + sizeof(struct ether_header));
+  memcpy(txarpeh, arpeh, sizeof(struct arphdr));
+  txarpeh->ea_hdr.ar_op = htons(ARPOP_REPLY);
+  memcpy(txarpeh->arp_sha, (bridge->xbee_dev->wpan_dev.address.ieee.b) + 2, 6);
+  memcpy(txarpeh->arp_spa, arpeh->arp_tpa, 4);
+  memcpy(txarpeh->arp_tha, arpeh->arp_sha, 6);
+  memcpy(txarpeh->arp_tpa, arpeh->arp_spa, 4);
+  n_xbee_xmit_ether_packet(bridge, txbuf, txlen);
+  free(txbuf);
+  return 0;
+}
+#endif
+
 int n_xbee_netdev_rx(const wpan_envelope_t* envelope, void* context) {
+#ifdef N_XBEE_ARP_RESPONDER
+  int res;
+#endif
   struct xbee_remote_node* remnode;
+  struct ether_header* mh;
   struct xbee_serial_bridge* bridge = n_xbee_serial_bridge;
   if (!bridge)
     return 0;
@@ -564,12 +653,31 @@ int n_xbee_netdev_rx(const wpan_envelope_t* envelope, void* context) {
   if (!bridge->netdevInitialized)
     return 0;
 
+  // skip preamble
+  mh = (struct ether_header*) (envelope->payload);
+#ifdef N_XBEE_VERBOSE
+  printk(KERN_INFO "%s: handling from mac %.2x:%.2x:%.2x:%.2x:%.2x:%.2x to mac %.2x:%.2x:%.2x:%.2x:%.2x:%.2x\n", __FUNCTION__, mh->ether_shost[0], mh->ether_shost[1], mh->ether_shost[2], mh->ether_shost[3], mh->ether_shost[4], mh->ether_shost[5], mh->ether_dhost[0], mh->ether_dhost[1], mh->ether_dhost[2], mh->ether_dhost[3], mh->ether_dhost[4], mh->ether_dhost[5]);
+#endif
+
+  uint16_t ether_type = ntohs(mh->ether_type);
+#ifdef N_XBEE_ARP_RESPONDER
+  if (ether_type == ETHERTYPE_ARP) {
+    res = n_xbee_netdev_handle_arp(bridge, envelope);
+#ifdef N_XBEE_ARP_RESPONDER_NO_PASSTHROUGH
+    if (!res)
+      return 0;
+#endif
+  }
+#endif
+
   write(bridge->netdev, (void*)envelope->payload, envelope->length);
-  printk(KERN_INFO "%s: wrote packet of len %d to tap.\n", __FUNCTION__, envelope->length);
+#ifdef N_XBEE_VERBOSE
+  printk(KERN_INFO "%s: wrote packet of type %u len %d to tap.\n", __FUNCTION__, ether_type, envelope->length);
+#endif
   return 0;
 }
 
-void n_xbee_xmit_ether_packet(struct xbee_serial_bridge* bridge, const char* buffer, int len) {
+void n_xbee_xmit_ether_packet(struct xbee_serial_bridge* bridge, const void* buffer, int len) {
   struct ether_header* mh;
   int i, err, nbcast = 0;
   wpan_envelope_t envelope;
@@ -583,7 +691,7 @@ void n_xbee_xmit_ether_packet(struct xbee_serial_bridge* bridge, const char* buf
 #endif
 
   // skip the preamble
-  mh = (struct ether_header*) (buffer + 4);
+  mh = (struct ether_header*) (buffer + N_XBEE_PREAMBLE_LEN);
 
 #ifdef N_XBEE_VERBOSE
   printk(KERN_INFO "%s: sending from mac %.2x:%.2x:%.2x:%.2x:%.2x:%.2x to mac %.2x:%.2x:%.2x:%.2x:%.2x:%.2x\n", __FUNCTION__, mh->ether_shost[0], mh->ether_shost[1], mh->ether_shost[2], mh->ether_shost[3], mh->ether_shost[4], mh->ether_shost[5], mh->ether_dhost[0], mh->ether_dhost[1], mh->ether_dhost[2], mh->ether_dhost[3], mh->ether_dhost[4], mh->ether_dhost[5]);
@@ -612,12 +720,11 @@ void n_xbee_xmit_ether_packet(struct xbee_serial_bridge* bridge, const char* buf
 
   // destination is broadcast
   if (!nbcast) {
-    printk(KERN_INFO "%s: broadcast packet.\n", __FUNCTION__);
     envelope.ieee_address = *WPAN_IEEE_ADDR_BROADCAST;
     envelope.options |= WPAN_ENVELOPE_BROADCAST_ADDR;
   }
   else {
-    rnod = n_xbee_node_find_eth(mh->ether_dhost, ETH_ALEN);
+    rnod = n_xbee_node_find_eth(&mh->ether_dhost, ETH_ALEN);
     if (!rnod) {
 #ifdef N_XBEE_VERBOSE
       printk(KERN_INFO "%s: unable to transmit, can't find in lookup table.\n", __FUNCTION__);
@@ -628,13 +735,13 @@ void n_xbee_xmit_ether_packet(struct xbee_serial_bridge* bridge, const char* buf
   }
   envelope.payload = buffer;
   envelope.length = len;
-  if ((err=wpan_envelope_send(&envelope)) != 0) {
+  pthread_mutex_lock(&bridge->write_lock);
+  err = wpan_envelope_send(&envelope);
 #ifdef N_XBEE_VERBOSE
-      printk(KERN_ALERT "%s: unable to transmit, error %d (%s).\n", __FUNCTION__,  err, strerror(err));
+  if (err != 0)
+    printk(KERN_ALERT "%s: unable to transmit, error %d (%s).\n", __FUNCTION__,  err, strerror(err));
 #endif
-      return;
-  }
-  return;
+  pthread_mutex_unlock(&bridge->write_lock);
 }
 
 void* n_xbee_read_loop(void* ctx) {
@@ -653,9 +760,7 @@ void* n_xbee_read_loop(void* ctx) {
       xbee_disc_discover_nodes(bridge->xbee_dev, NULL);
       discover = mstime;
     }
-    if (xbee_millisecond_timer() == mstime) {
-      msleep(1);
-    }
+    pthread_yield();
   }
 
   return NULL;
@@ -698,60 +803,58 @@ void n_xbee_main_loop(void) {
         return;
       }
       // not sure what the 46 byte packets are
+#ifdef N_XBEE_VERBOSE
       printk(KERN_INFO "%s: read %d bytes from netdev.\n", __FUNCTION__, nread);
+#endif
       n_xbee_xmit_ether_packet(bridge, recv_buffer, nread);
     }
+    pthread_yield();
   }
 }
 
 static int n_xbee_init(void) {
-  int result = 0;
   printk(KERN_INFO "%s: xbee-net initializing...\n", __FUNCTION__);
-
   n_xbee_node_table = NULL;
-  if (result) {
-    printk(KERN_ALERT "%s: Registering line discipline failed: %d\n", __FUNCTION__, result);
-    return result;
-  }
-
-  return result;
+  return 0;
 }
 
 static void n_xbee_cleanup(void) {
   printk(KERN_INFO "%s: xbee-net shutting down...\n", __FUNCTION__);
   // n_xbee_free_all_bridges();
+  if (n_xbee_serial_bridge)
+    n_xbee_free_bridge(n_xbee_serial_bridge);
   n_xbee_free_remote_nodetable();
 }
 
 /*
-	Parse the command-line arguments, looking for "/dev/" to determine the
-	serial port to use, and a bare number (assumed to be the baud rate).
+   Parse the command-line arguments, looking for "/dev/" to determine the
+   serial port to use, and a bare number (assumed to be the baud rate).
 
-	@param[in]	argc		argument count
-	@param[in]	argv		array of \a argc arguments
-	@param[out]	serial	serial port settings
-*/
+   @param[in]	argc		argument count
+   @param[in]	argv		array of \a argc arguments
+   @param[out]	serial	serial port settings
+   */
 int parse_serial_arguments(int argc, const char *argv[], xbee_serial_t *serial) {
-	int i;
-	uint32_t baud;
+  int i;
+  uint32_t baud;
 
-	memset( serial, 0, sizeof *serial);
+  memset( serial, 0, sizeof *serial);
 
-	// default baud rate
-	serial->baudrate = 115200;
+  // default baud rate
+  serial->baudrate = 115200;
 
-	for (i = 1; i < argc; ++i)
-	{
-		if (strncmp( argv[i], "/dev", 4) == 0)
-		{
-			strncpy( serial->device, argv[i], (sizeof serial->device) - 1);
-			serial->device[(sizeof serial->device) - 1] = '\0';
-		}
-		if ( (baud = (uint32_t) strtoul( argv[i], NULL, 0)) > 0)
-		{
-			serial->baudrate = baud;
-		}
-	}
+  for (i = 1; i < argc; ++i)
+  {
+    if (strncmp( argv[i], "/dev", 4) == 0)
+    {
+      strncpy( serial->device, argv[i], (sizeof serial->device) - 1);
+      serial->device[(sizeof serial->device) - 1] = '\0';
+    }
+    if ( (baud = (uint32_t) strtoul( argv[i], NULL, 0)) > 0)
+    {
+      serial->baudrate = baud;
+    }
+  }
 
   if (*serial->device == '\0') {
     printk(KERN_ALERT "%s: invalid command line args.\n", __FUNCTION__);

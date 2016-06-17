@@ -20,6 +20,9 @@
 #define N_XBEE_MAXFRAME (N_XBEE_DATA_MTU*2 + 16)
 #define TUN_PATH "/dev/net/tun"
 
+#define N_XBEE_PREAMBLE_LEN 0
+#define N_XBEE_ETHHDR_LEN sizeof(struct ether_header)
+
 // endpoint for xbee-netdev
 // #define N_XBEE_ENDPOINT 0xE7
 #define N_XBEE_ENDPOINT 0xE8
@@ -38,7 +41,7 @@ struct xbee_serial_bridge;
 // Discovered remote node
 struct xbee_remote_node;
 typedef struct xbee_remote_node {
-  addr64 node_addr;
+  unsigned char node_addr[8];
   struct xbee_remote_node* next;
 } xbee_remote_node;
 xbee_remote_node* n_xbee_node_table;
@@ -54,6 +57,9 @@ typedef struct xbee_serial_bridge {
   int netdevInitialized;
   // file descriptor for tun
   int netdev;
+  int netdev_idx;
+  // dummy socket
+  int netdev_sock;
   // passed to open()
   const char* tty_name;
   xbee_dev_t* xbee_dev;
