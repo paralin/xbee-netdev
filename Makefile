@@ -17,6 +17,7 @@ _XBEE_NET_FILES := \
 	$(_XBEE_SRC_DIR)/util/swapbytes.o \
 	$(_XBEE_SRC_DIR)/util/hexstrtobyte.o \
 	$(_XBEE_SRC_DIR)/wpan/wpan_types.o \
+	src/hexdump.o \
 	src/n_xbee.o
 
 CC=gcc
@@ -42,6 +43,7 @@ CFLAGS += -DWPAN_APS_VERBOSE
 CFLAGS += -DN_XBEE_VERBOSE
 
 CFLAGS += -g
+DEPS += -pthread
 
 default: xbee_netdev
 xbee_netdev: ensure-submodule $(_XBEE_NET_FILES)

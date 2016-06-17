@@ -1,9 +1,9 @@
 #include "n_xbee.h"
+#include "hexdump.h"
 
 #include <unistd.h>
 #include <libgen.h>
 #include <assert.h>
-
 
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -20,8 +20,8 @@
 #include <xbee/discovery.h>
 
 #include <linux/if.h>
+#include <linux/if_arp.h>
 #include <linux/if_tun.h>
-#include <linux/if_packet.h>
 
 #include <net/ethernet.h>
 
@@ -49,8 +49,9 @@ const xbee_dispatch_table_entry_t xbee_frame_handlers[] =
 wpan_ep_state_t zdo_ep_state = { 0 };
 wpan_ep_state_t zcl_ep_state = { 0 };
 
+int n_xbee_netdev_rx(const wpan_envelope_t* envelope, void* context);
 const wpan_cluster_table_entry_t xbee_data_clusters[] = {
-  // { N_XBEE_CLUSTER_ID, n_xbee_netdev_rx, NULL, WPAN_CLUST_FLAG_INOUT | WPAN_CLUST_FLAG_NOT_ZCL },
+  { N_XBEE_CLUSTER_ID, NULL, NULL, WPAN_CLUST_FLAG_INOUT | WPAN_CLUST_FLAG_NOT_ZCL },
   // if we don't set ATAO to 0...
   XBEE_DISC_DIGI_DATA_CLUSTER_ENTRY,
   WPAN_CLUST_ENTRY_LIST_END
@@ -62,7 +63,7 @@ const wpan_endpoint_table_entry_t xbee_endpoints[] = {
   { N_XBEE_ENDPOINT,
     WPAN_PROFILE_DIGI,
     // ignore general endpoint, instead listen to cluster
-    NULL,
+    n_xbee_netdev_rx,
     NULL,
     0x0,
     0x0,
@@ -340,7 +341,7 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge) {
   }
 
   // TODO: might be decreasable
-  msleep(1000);
+  msleep(2000);
   // n_xbee_flush_buffer(bridge->tty);
 
   if ((err = xbee_cmd_init_device(xbee)) != 0) {
@@ -372,61 +373,6 @@ int n_xbee_check_tty(xbee_serial_bridge* bridge) {
   return 0;
 }
 
-  /*
-  struct xbee_serial_bridge* bridge;
-  struct ethhdr* mh;
-  int i, err, nbcast = 0;
-  wpan_envelope_t envelope;
-  struct xbee_remote_node* rnod;
-  bridge = n_xbee_find_bridge_byndev(dev);
-  if (!bridge)
-    return NETDEV_TX_OK;
-  memset(&envelope, 0, sizeof(envelope));
-  // try to find the equiv ether addr
-  mh = eth_hdr(skb);
-  // unsigned char mh->h_dest[ETH_ALEN]
-#ifdef N_XBEE_VERBOSE
-  printk(KERN_INFO "%s: request to transmit to %pM.\n", __FUNCTION__, mh->h_dest);
-#endif
-  // set initial values
-  envelope.dev = &bridge->xbee_dev->wpan_dev;
-  envelope.profile_id = WPAN_PROFILE_DIGI;
-  envelope.cluster_id = N_XBEE_CLUSTER_ID;
-  envelope.dest_endpoint = envelope.source_endpoint = N_XBEE_ENDPOINT;
-  envelope.network_address = WPAN_NET_ADDR_UNDEFINED;
-  // check if broadcast addr
-  for (i = 0; i < ETH_ALEN; i++) {
-    if (mh->h_dest[i] == 0xFF)
-      continue;
-    nbcast = 1;
-    break;
-  }
-  // destination is broadcast
-  if (!nbcast) {
-    envelope.ieee_address = *WPAN_IEEE_ADDR_BROADCAST;
-    envelope.options |= WPAN_ENVELOPE_BROADCAST_ADDR;
-  }
-  else {
-    rnod = n_xbee_node_find_eth(mh->h_dest, ETH_ALEN);
-    if (!rnod) {
-#ifdef N_XBEE_VERBOSE
-      printk(KERN_INFO "%s: unable to transmit to %pM, can't find in lookup table.\n", __FUNCTION__, mh->h_dest);
-#endif
-      return NETDEV_TX_OK;
-    }
-    memcpy(&envelope.ieee_address, &rnod->node_addr, 8);
-  }
-  envelope.payload = skb->data;
-  envelope.length = skb->len;
-  if ((err=wpan_envelope_send(&envelope)) != 0) {
-#ifdef N_XBEE_VERBOSE
-      printk(KERN_ALERT "%s: unable to transmit to %pM, error %d.\n", __FUNCTION__, mh->h_dest, err);
-#endif
-      return NETDEV_TX_OK;
-  }
-  return NETDEV_TX_OK;
-  */
-
 int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
   struct xbee_netdev_priv* priv;
   int err, fd, sock_fd;
@@ -434,6 +380,7 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
   struct sockaddr_ll sall;
   struct ifreq ifr;
 
+  flags &= ~IFF_MULTICAST;
   if (!bridge || !bridge->name) return -1;
   if (bridge->netdevInitialized) {
     printk(KERN_ALERT "%s: Net bridge %s already inited!\n", __FUNCTION__, bridge->netdevName);
@@ -450,13 +397,12 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
   ifr.ifr_flags = flags;
   // doesn't work - maybe set later
   // ifr.ifr_mtu = N_XBEE_DATA_MTU;
-  memcpy(ifr.ifr_hwaddr.sa_data, bridge->xbee_dev->wpan_dev.address.ieee.b + 2, ETH_ALEN);
 
   if (bridge->netdevName)
     strncpy(ifr.ifr_name, bridge->netdevName, IFNAMSIZ);
 
   if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0) {
-    printk(KERN_ALERT "%s: Failed to alloc tap, %d (%s)...\n", __FUNCTION__, err, strerror(err));
+    printk(KERN_ALERT "%s: Failed to alloc tap, %d (%s)...\n", __FUNCTION__, errno, strerror(errno));
     close(fd);
     return err;
   }
@@ -474,6 +420,19 @@ int n_xbee_init_netdev(xbee_serial_bridge* bridge) {
   bridge->netdev = fd;
   // bridge->netdev_idx = ifr.ifr_ifindex;
   bridge->netdevInitialized = 1;
+
+  // set hwaddr
+  memcpy(ifr.ifr_hwaddr.sa_data, bridge->xbee_dev->wpan_dev.address.ieee.b + 2, ETH_ALEN);
+  ifr.ifr_hwaddr.sa_family = ARPHRD_ETHER;
+  if (ioctl(fd, SIOCSIFHWADDR, (void *)&ifr) < 0) {
+    printk(KERN_ALERT "%s: unable to set MAC addr, %d (%s)...\n", __FUNCTION__, errno, strerror(errno));
+  }
+
+  // set mtu
+  ifr.ifr_mtu = N_XBEE_DATA_MTU;
+  if (ioctl(fd, SIOCSIFMTU, (void *)&ifr) < 0) {
+    printk(KERN_ALERT "%s: unable to set mtu, %d (%s)...\n", __FUNCTION__, errno, strerror(errno));
+  }
 
   return 0;
 }
@@ -592,30 +551,144 @@ static int n_xbee_serial_open(xbee_serial_t* serial) {
   return 0;
 }
 
+int n_xbee_netdev_rx(const wpan_envelope_t* envelope, void* context) {
+  struct xbee_remote_node* remnode;
+  struct xbee_serial_bridge* bridge = n_xbee_serial_bridge;
+  if (!bridge)
+    return 0;
+#ifdef N_XBEE_VERBOSE
+  printk(KERN_INFO "%s: handling xbee packet of len %d\n", __FUNCTION__, envelope->length);
+  hexdump((void*)envelope->payload, envelope->length);
+#endif
+  remnode = n_xbee_node_find_or_insert(&envelope->ieee_address);
+  if (!bridge->netdevInitialized)
+    return 0;
+
+  write(bridge->netdev, (void*)envelope->payload, envelope->length);
+  printk(KERN_INFO "%s: wrote packet of len %d to tap.\n", __FUNCTION__, envelope->length);
+  return 0;
+}
+
+void n_xbee_xmit_ether_packet(struct xbee_serial_bridge* bridge, const char* buffer, int len) {
+  struct ether_header* mh;
+  int i, err, nbcast = 0;
+  wpan_envelope_t envelope;
+  struct xbee_remote_node* rnod;
+
+#ifdef N_XBEE_VERBOSE
+  if (len < 28) {
+    printk(KERN_ALERT "%s: packet length is %d, less than min of 64, dropping.\n", __FUNCTION__, len);
+    return;
+  }
+#endif
+
+  // skip the preamble
+  mh = (struct ether_header*) (buffer + 4);
+
+#ifdef N_XBEE_VERBOSE
+  printk(KERN_INFO "%s: sending from mac %.2x:%.2x:%.2x:%.2x:%.2x:%.2x to mac %.2x:%.2x:%.2x:%.2x:%.2x:%.2x\n", __FUNCTION__, mh->ether_shost[0], mh->ether_shost[1], mh->ether_shost[2], mh->ether_shost[3], mh->ether_shost[4], mh->ether_shost[5], mh->ether_dhost[0], mh->ether_dhost[1], mh->ether_dhost[2], mh->ether_dhost[3], mh->ether_dhost[4], mh->ether_dhost[5]);
+  hexdump((void*) buffer, len);
+#endif
+
+  // set initial values
+  memset(&envelope, 0, sizeof(envelope));
+  envelope.dev = &bridge->xbee_dev->wpan_dev;
+  envelope.profile_id = WPAN_PROFILE_DIGI;
+  envelope.cluster_id = N_XBEE_CLUSTER_ID;
+  envelope.dest_endpoint = envelope.source_endpoint = N_XBEE_ENDPOINT;
+  envelope.network_address = WPAN_NET_ADDR_UNDEFINED;
+  // check if broadcast addr
+#ifdef N_XBEE_NO_MULTICAST
+  for (i = 0; i < ETH_ALEN; i++) {
+    if (mh->ether_dhost[i] == 0xFF)
+      continue;
+    nbcast = 1;
+    break;
+  }
+#else
+  // if LSB of first octet is set to 1 then multicast
+  nbcast = !(mh->ether_dhost[0] & 1);
+#endif
+
+  // destination is broadcast
+  if (!nbcast) {
+    printk(KERN_INFO "%s: broadcast packet.\n", __FUNCTION__);
+    envelope.ieee_address = *WPAN_IEEE_ADDR_BROADCAST;
+    envelope.options |= WPAN_ENVELOPE_BROADCAST_ADDR;
+  }
+  else {
+    rnod = n_xbee_node_find_eth(mh->ether_dhost, ETH_ALEN);
+    if (!rnod) {
+#ifdef N_XBEE_VERBOSE
+      printk(KERN_INFO "%s: unable to transmit, can't find in lookup table.\n", __FUNCTION__);
+#endif
+      return;
+    }
+    memcpy(&envelope.ieee_address, &rnod->node_addr, 8);
+  }
+  envelope.payload = buffer;
+  envelope.length = len;
+  if ((err=wpan_envelope_send(&envelope)) != 0) {
+#ifdef N_XBEE_VERBOSE
+      printk(KERN_ALERT "%s: unable to transmit, error %d (%s).\n", __FUNCTION__,  err, strerror(err));
+#endif
+      return;
+  }
+  return;
+}
+
+void* n_xbee_read_loop(void* ctx) {
+  struct xbee_serial_bridge* bridge = n_xbee_serial_bridge;
+  if (!bridge)
+    return;
+
+  uint32_t mstime;
+  uint32_t discover = xbee_millisecond_timer();
+
+  while (1) {
+    mstime = xbee_millisecond_timer();
+    // tick the xbee
+    n_xbee_handle_runtime_frames(bridge);
+    if (mstime - discover > N_XBEE_DISCOVER_INTERVAL) {
+      xbee_disc_discover_nodes(bridge->xbee_dev, NULL);
+      discover = mstime;
+    }
+    if (xbee_millisecond_timer() == mstime) {
+      msleep(1);
+    }
+  }
+
+  return NULL;
+}
+
 void n_xbee_main_loop(void) {
   int nread;
   // set this to proper mtu later...
   const int mtu = 1500;
-  char recv_buffer[mtu];
+  char recv_buffer[mtu + 5];
   fd_set readset, activeset;
 
   struct xbee_serial_bridge* bridge = n_xbee_serial_bridge;
   if (!bridge)
     return;
 
+  pthread_t xbee_read_thread;
+  if (pthread_create(&xbee_read_thread, NULL, n_xbee_read_loop, NULL)) {
+    printk("%s: Error creating read thread, exiting.\n", __FUNCTION__);
+    return;
+  }
+
   FD_ZERO(&activeset);
   FD_SET(bridge->netdev, &activeset);
-  while (1) {
-    // tick the xbee
-    n_xbee_handle_runtime_frames(bridge);
+  while(1) {
     // check for packets from tap
     readset = activeset;
     // first argument is maximum fd we are listening to + 1
     if (select(bridge->netdev + 1, &readset, NULL, NULL, NULL) < 0) {
-      if (errno == -EINTR)
-        continue;
-      printk(KERN_ALERT "%s: select() errored.\n", __FUNCTION__);
-      return;
+      if (errno != -EINTR) {
+        printk(KERN_ALERT "%s: select() errored.\n", __FUNCTION__);
+        return;
+      }
     }
 
     if (FD_ISSET(bridge->netdev, &readset)) {
@@ -624,7 +697,9 @@ void n_xbee_main_loop(void) {
         printk(KERN_ALERT "%s: error reading from recv_buf, %d (%s)...\n", __FUNCTION__, nread, strerror(nread));
         return;
       }
+      // not sure what the 46 byte packets are
       printk(KERN_INFO "%s: read %d bytes from netdev.\n", __FUNCTION__, nread);
+      n_xbee_xmit_ether_packet(bridge, recv_buffer, nread);
     }
   }
 }

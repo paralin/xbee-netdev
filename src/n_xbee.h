@@ -21,12 +21,13 @@
 #define TUN_PATH "/dev/net/tun"
 
 // endpoint for xbee-netdev
-#define N_XBEE_ENDPOINT 0xE7
+// #define N_XBEE_ENDPOINT 0xE7
+#define N_XBEE_ENDPOINT 0xE8
 // cluster ID, might want to make this settable down the line
-#define N_XBEE_CLUSTER_ID 54
+#define N_XBEE_CLUSTER_ID 0x11
 
 // Tick every 100ms
-#define N_XBEE_TICK_INTERVAL 100
+// #define N_XBEE_TICK_INTERVAL 100
 // Discover every 2 minutes
 #define N_XBEE_DISCOVER_INTERVAL 120000
 
