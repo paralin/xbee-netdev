@@ -25,6 +25,8 @@
 
 #include <net/ethernet.h>
 #include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/ip_icmp.h>
 
 
 // compat with old printk defs
@@ -32,6 +34,12 @@
 #define KERN_ALERT
 #define printk printf
 #define msleep(TIME) usleep(TIME * 1000)
+
+#ifndef N_XBEE_ENABLE_UNIMPLEMENTED
+#undef N_XBEE_PING_RESPONDER
+#else
+#warning Enabling unimplemented code!
+#endif
 
 struct ether_arp {
   struct arphdr ea_hdr;
@@ -562,8 +570,40 @@ static int n_xbee_serial_open(xbee_serial_t* serial) {
   return 0;
 }
 
+// marked inline because they are called once...
+#ifdef N_XBEE_PING_RESPONDER
+inline int n_xbee_netdev_handle_icmp(xbee_serial_bridge* bridge, const wpan_envelope_t* envelope) {
+  struct icmp* imp;
+  struct ether_header* eh;
+
+  eh = (struct ether_header*)envelope->payload;
+  if (memcmp(bridge->xbee_dev->wpan_dev.address.ieee.b + 2, eh->ether_dhost, ETH_ALEN) != 0) {
+#ifdef N_XBEE_VERBOSE
+    printk(KERN_INFO "%s: ignoring icmp to someone else.\n", __FUNCTION__);
+#endif
+    return 1;
+  }
+
+  // it's to us, parse the icmp packet
+  if (envelope->length < (sizeof(struct ether_header) + sizeof(struct icmp) + sizeof(struct ip))) {
+#ifdef N_XBEE_VERBOSE
+    printk(KERN_INFO "%s: ignoring icmp of too short length %d.\n", __FUNCTION__, envelope->length);
+#endif
+    return 2;
+  }
+
+  imp = (struct icmp*)(envelope->payload + sizeof(struct ether_header) + sizeof(struct ip));
+  if (ntohs(imp->icmp_type) != ICMP_ECHO) {
+#ifdef N_XBEE_VERBOSE
+    printk(KERN_INFO "%s: ignoring icmp of different type %d.\n", __FUNCTION__, ntohs(imp->icmp_type));
+#endif
+    return 3;
+  }
+}
+#endif
+
 #ifdef N_XBEE_ARP_RESPONDER
-int n_xbee_netdev_handle_arp(xbee_serial_bridge* bridge, const wpan_envelope_t* envelope) {
+inline int n_xbee_netdev_handle_arp(xbee_serial_bridge* bridge, const wpan_envelope_t* envelope) {
   struct arphdr* arph;
   struct ether_arp* arpeh;
   struct ether_arp* txarpeh;
@@ -575,7 +615,13 @@ int n_xbee_netdev_handle_arp(xbee_serial_bridge* bridge, const wpan_envelope_t* 
 
   eh = (struct ether_header*)envelope->payload;
   arph = (struct arphdr*)(envelope->payload + N_XBEE_ETHHDR_LEN);
+#ifdef N_XBEE_VERBOSE
   printk(KERN_INFO "%s: handling arp len %d op proto 0x%08x hrd proto 0x%08x.\n", __FUNCTION__, envelope->length, ntohs(arph->ar_pro), ntohs(arph->ar_hrd));
+#endif
+
+  if (ntohs(arph->ar_op) == ARPOP_REPLY)
+    return 1;
+
   if (ntohs(arph->ar_op) != ARPOP_REQUEST) {
     printk(KERN_INFO "%s: unknown ar_op %u!\n", __FUNCTION__, htons(arph->ar_op));
     return 1;
@@ -596,9 +642,7 @@ int n_xbee_netdev_handle_arp(xbee_serial_bridge* bridge, const wpan_envelope_t* 
     return 4;
   }
 
-  printk(KERN_INFO "%s: handling arp request.", __FUNCTION__);
   arpeh = (struct ether_arp*)arph;
-
   // compare target ip to our ip
   memset(&ifr, 0, sizeof(struct ifreq));
   ifr.ifr_addr.sa_family = AF_INET;
@@ -642,6 +686,7 @@ int n_xbee_netdev_rx(const wpan_envelope_t* envelope, void* context) {
 #endif
   struct xbee_remote_node* remnode;
   struct ether_header* mh;
+  unsigned char proto;
   struct xbee_serial_bridge* bridge = n_xbee_serial_bridge;
   if (!bridge)
     return 0;
@@ -668,6 +713,20 @@ int n_xbee_netdev_rx(const wpan_envelope_t* envelope, void* context) {
       return 0;
 #endif
   }
+#ifdef N_XBEE_PING_RESPONDER
+  else if (ether_type == ETHERTYPE_IP) {
+    // fast check for icmp
+    // 9 = offset of protocol field
+    proto = *((unsigned char*)(envelope->payload + 9 + sizeof(struct ether_header)));
+    if (proto == 0x01) {
+      res = n_xbee_netdev_handle_icmp(bridge, envelope);
+#ifdef N_XBEE_PING_RESPONDER_NO_PASSTHROUGH
+      if (!res)
+        return 0;
+#endif
+    }
+  }
+#endif
 #endif
 
   write(bridge->netdev, (void*)envelope->payload, envelope->length);

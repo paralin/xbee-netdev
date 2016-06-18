@@ -22,6 +22,8 @@
 #define N_XBEE_PREAMBLE_LEN 0
 #define N_XBEE_ETHHDR_LEN sizeof(struct ether_header)
 
+#define ETHERTYPE_IPV6 0x86DD
+
 // endpoint for xbee-netdev
 // #define N_XBEE_ENDPOINT 0xE7
 #define N_XBEE_ENDPOINT 0xE8
