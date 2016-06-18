@@ -461,8 +461,8 @@ void n_xbee_free_netdev(xbee_serial_bridge* n) {
 // ticks the xbee
 // since we register all the callbacks in the xbee code
 // we can just call tick.
-inline void n_xbee_handle_runtime_frames(xbee_serial_bridge* bridge) {
-  xbee_dev_tick(bridge->xbee_dev);
+inline int n_xbee_handle_runtime_frames(xbee_serial_bridge* bridge) {
+  return xbee_dev_tick(bridge->xbee_dev);
 }
 
 /* = XBEE Detection and Setup  =
@@ -699,6 +699,7 @@ void n_xbee_xmit_ether_packet(struct xbee_serial_bridge* bridge, const void* buf
 #endif
 
   // set initial values
+  pthread_mutex_lock(&bridge->write_lock);
   memset(&envelope, 0, sizeof(envelope));
   envelope.dev = &bridge->xbee_dev->wpan_dev;
   envelope.profile_id = WPAN_PROFILE_DIGI;
@@ -735,7 +736,6 @@ void n_xbee_xmit_ether_packet(struct xbee_serial_bridge* bridge, const void* buf
   }
   envelope.payload = buffer;
   envelope.length = len;
-  pthread_mutex_lock(&bridge->write_lock);
   err = wpan_envelope_send(&envelope);
 #ifdef N_XBEE_VERBOSE
   if (err != 0)
@@ -749,18 +749,22 @@ void* n_xbee_read_loop(void* ctx) {
   if (!bridge)
     return;
 
+  int err;
   uint32_t mstime;
   uint32_t discover = xbee_millisecond_timer();
 
   while (1) {
     mstime = xbee_millisecond_timer();
     // tick the xbee
-    n_xbee_handle_runtime_frames(bridge);
+    err = n_xbee_handle_runtime_frames(bridge);
+
     if (mstime - discover > N_XBEE_DISCOVER_INTERVAL) {
       xbee_disc_discover_nodes(bridge->xbee_dev, NULL);
       discover = mstime;
     }
     pthread_yield();
+    if (!err)
+      usleep(10);
   }
 
   return NULL;
@@ -771,7 +775,9 @@ void n_xbee_main_loop(void) {
   // set this to proper mtu later...
   const int mtu = 1500;
   char recv_buffer[mtu + 5];
+#ifdef N_XBEE_USE_SELECT
   fd_set readset, activeset;
+#endif
 
   struct xbee_serial_bridge* bridge = n_xbee_serial_bridge;
   if (!bridge)
@@ -783,9 +789,12 @@ void n_xbee_main_loop(void) {
     return;
   }
 
+#ifdef N_XBEE_USE_SELECT
   FD_ZERO(&activeset);
   FD_SET(bridge->netdev, &activeset);
+#endif
   while(1) {
+#ifdef N_XBEE_USE_SELECT
     // check for packets from tap
     readset = activeset;
     // first argument is maximum fd we are listening to + 1
@@ -797,7 +806,8 @@ void n_xbee_main_loop(void) {
     }
 
     if (FD_ISSET(bridge->netdev, &readset)) {
-      nread = read(bridge->netdev, recv_buffer, mtu);
+#endif
+      nread = read(bridge->netdev, recv_buffer, mtu + 5);
       if (nread < 0) {
         printk(KERN_ALERT "%s: error reading from recv_buf, %d (%s)...\n", __FUNCTION__, nread, strerror(nread));
         return;
@@ -806,8 +816,11 @@ void n_xbee_main_loop(void) {
 #ifdef N_XBEE_VERBOSE
       printk(KERN_INFO "%s: read %d bytes from netdev.\n", __FUNCTION__, nread);
 #endif
+
       n_xbee_xmit_ether_packet(bridge, recv_buffer, nread);
+#ifdef N_XBEE_USE_SELECT
     }
+#endif
     pthread_yield();
   }
 }
@@ -861,6 +874,8 @@ int parse_serial_arguments(int argc, const char *argv[], xbee_serial_t *serial) 
     printk(KERN_ALERT "usage: /dev/ttyUSB0 115200\n");
     return -1;
   }
+
+  printk(KERN_INFO "%s: using device %s baud %d\n", __FUNCTION__, serial->device, serial->baudrate);
   return 0;
 }
 

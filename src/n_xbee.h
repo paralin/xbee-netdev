@@ -1,7 +1,6 @@
 #pragma once
 #ifndef _N_XBEE_H
 #define _N_XBEE_H
-#define POSIX
 
 #include <stdlib.h>
 #include <stdint.h>

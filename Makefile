@@ -1,5 +1,5 @@
-CC := gcc -Wall -Werror
-CFLAGS=-D_POSIX_C_SOURCE
+CC := gcc -O3
+CFLAGS=-DPOSIX
 
 _XBEE_SRC_DIR := thirdparty/xbee_ansic_library/src
 _XBEE_NET_FILES := \
@@ -20,7 +20,6 @@ _XBEE_NET_FILES := \
 	src/hexdump.o \
 	src/n_xbee.o
 
-CC=gcc
 %.o: %.c
 		$(CC) -c -o $@ $< $(CFLAGS)
 
@@ -28,8 +27,8 @@ CFLAGS += -I$(PWD)/thirdparty/xbee_ansic_library/include
 # CFLAGS += -DPOSIX
 
 # These will enabel verbosity in various parts.
-CFLAGS += -DXBEE_ATMODE_VERBOSE
-CFLAGS += -DXBEE_ATCMD_VERBOSE
+# CFLAGS += -DXBEE_ATMODE_VERBOSE
+# CFLAGS += -DXBEE_ATCMD_VERBOSE
 
 # this is required
 CFLAGS += -DXBEE_DEVICE_ENABLE_ATMODE -DXBEE_CMD_DISABLE_REMOTE
@@ -37,15 +36,15 @@ CFLAGS += -DXBEE_DEVICE_ENABLE_ATMODE -DXBEE_CMD_DISABLE_REMOTE
 # If you enable this you will get a LOT of debugging output
 # EXTRA_CFLAGS += -DXBEE_SERIAL_VERBOSE
 # EXTRA_CFLAGS += -DXBEE_DEVICE_VERBOSE
-CFLAGS += -DWPAN_APS_VERBOSE
+# CFLAGS += -DWPAN_APS_VERBOSE
 
 # Enabel verbsity of this module
-CFLAGS += -DN_XBEE_VERBOSE
+# CFLAGS += -DN_XBEE_VERBOSE
 
 # Handle arp packets in the driver
 CFLAGS += -DN_XBEE_ARP_RESPONDER
 
-CFLAGS += -g
+# CFLAGS += -g
 DEPS += -pthread
 
 default: xbee_netdev
