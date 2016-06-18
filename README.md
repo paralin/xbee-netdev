@@ -41,46 +41,11 @@ Setting mac addresses on the interface is NOT supported as we cannot change the 
 
 Broadcast packets are supported. Broadcast packets will be sent to the 0x000000000000FFFF mac address range in the XBEE network.
 
-MTU Notes
-=========
-
-The MTU for an xbee is quite small (72 bytes?) and as an ethernet device the xbee network device can't exactly set the MTU to anything less than 1500 without problems. Other protocols might require that to be increased with user-space tools to over 1530 bytes.
-
-As a result, fragmentation is implemented in the driver. The MTU can be set to anything, but it is set on default to whatever the actual MTU of the device is to avoid unnecessary fragmentation. It can be changed by user-space tools. Changing this value by user-space tools will engage fragmentation in the driver.
 
 Radio Configuration
 ===================
 
 This device will automatically set your device in API 1 mode with AO enabled. Make sure your device is running a firmware with API mode included!
-
-Fragmentation
-=============
-
-The fragmentation in this driver is implemented as such.
-
-For sending:
-
- - When sending a packet, the FULL packet is built first. A determination is made that the packet can or cant fit under the standard xbee mtu.
- - If the packet fits in the xbee mtu, it will be immediately transmitted as such.
- - If not, the driver will decide the maximum size of each packet payload (including the header this driver prepends), and splits the data into these fragments.
- - A unique ID is generated for this fragmentation (a unsigned short, 0-255).
- - An initial fragmentation start marker is sent in its own packet. This contains the fragmentation ID, the message fragment size, and the number of fragment messages.
- - Each individual fragment is sent out with its own order (short, maximum of 255 fragments) number.
-
-For receiving:
-
- - The initial fragment marker is received. If a fragmentation context exists from this sender (identified by remote MAC address) it will be dropped.
- - Some limits are put on the number of fragmentation messages and the individual fragment size, to prevent intentional overflows
- - The driver will allocate a fragmentation context for this individual fragment, including enough space to hold the full message.
- - As the driver receives each fragment, it slots the fragment by its ID into each of the fragment slots in the context.
- - If a fragment is received with the wrong "fragment sequence ID" it will be dropped.
- - If a fragment is received twice, it will be dropped.
- - If the fragment sequence times out (more than 0.5 second) the entire context will be dropped.
- - Once all fragments are received, the message is assembled and passed up the control chain. The context is dropped.
-
-For the future:
-
- - Allocating a fragment context could take time, this could be optimized by re-using existing fragmentation contexts (create one for each remote device and only free it after it hasn't been used for some time)
 
 MAC Addresses
 =============
